@@ -1,0 +1,15 @@
+<!doctype html><html><body style="margin:0;background:transparent">
+<canvas id="c" width="512" height="512"></canvas>
+<script>
+const p = new URLSearchParams(location.search); const S = +p.get('s') || 512, mask = p.get('m') === '1';
+const c = document.getElementById('c'); c.width = c.height = S; const g = c.getContext('2d');
+g.fillStyle = '#171615';
+if (mask) g.fillRect(0, 0, S, S); else { const r = S * 0.22; g.beginPath(); g.roundRect(0, 0, S, S, r); g.fill(); }
+const cx = S / 2, cy = S * 0.53, R = S * (mask ? 0.27 : 0.33);
+const gr = g.createRadialGradient(cx - R * 0.35, cy - R * 0.4, R * 0.05, cx, cy, R * 1.05);
+gr.addColorStop(0, '#f6c98c'); gr.addColorStop(0.35, '#e3a44f'); gr.addColorStop(0.8, '#9a5a24'); gr.addColorStop(1, '#5e3414');
+g.fillStyle = gr; g.beginPath(); g.ellipse(cx, cy, R, R * 0.96, 0, 0, Math.PI * 2); g.fill();
+// trait de crayon 3D qui passe devant
+g.strokeStyle = '#ebe5dc'; g.lineCap = 'round'; g.lineWidth = S * 0.035;
+g.beginPath(); g.moveTo(cx - R * 1.25, cy + R * 0.55); g.bezierCurveTo(cx - R * 0.4, cy - R * 0.15, cx + R * 0.35, cy + R * 0.9, cx + R * 1.2, cy - R * 0.35); g.stroke();
+</script></body></html>

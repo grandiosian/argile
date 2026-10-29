@@ -796,7 +796,33 @@ function remeshVoxel(L, res, opts = {}) {
   for (let g = 0; g < N; g++) { if (!outside[g]) { sdf[g] = -dist[g]; inside++; } }
   let shell = false;
   if (inside === 0) { shell = true; for (let g = 0; g < N; g++) sdf[g] = dist[g] - 0.75 * h; }
-  // surface nets
+  const net = surfaceNets(sdf, NX, NY, NZ, ox, oy, oz, h);
+  const npos = net.pos, nidx = net.idx, nOut = net.nv;
+  const out = makeLevel(npos, nidx, nOut);
+  // projection sur la surface d'origine + transfert couleurs / groupes
+  const bvh = new BVH(pos, idx);
+  const cp = { tri: -1 };
+  const triG = new Uint32Array(nOut);
+  const maxProj = 1.5 * h;
+  for (let v = 0; v < nOut; v++) {
+    const o = 3 * v;
+    bvh.closest(npos[o], npos[o + 1], npos[o + 2], cp);
+    if (cp.tri < 0) continue;
+    triG[v] = L.groups[cp.tri];
+    const a = idx[3 * cp.tri], b = idx[3 * cp.tri + 1], c = idx[3 * cp.tri + 2];
+    for (let q = 0; q < 4; q++) out.col[4 * v + q] = Math.round(L.col[4 * a + q] * cp.u + L.col[4 * b + q] * cp.v + L.col[4 * c + q] * cp.w);
+    if (project && !shell && cp.d2 < maxProj * maxProj) { npos[o] = cp.x; npos[o + 1] = cp.y; npos[o + 2] = cp.z; }
+  }
+  for (let t = 0; t < out.nt; t++) {
+    const a = triG[nidx[3 * t]], b = triG[nidx[3 * t + 1]], c = triG[nidx[3 * t + 2]];
+    out.groups[t] = (b === c) ? b : a;
+  }
+  out.info = { voxels: N, shell };
+  return out;
+}
+// Surface nets : extrait l'isosurface 0 d'une grille signée (négatif = intérieur), normales vers l'extérieur
+function surfaceNets(sdf, NX, NY, NZ, ox, oy, oz, h) {
+  const N = NX * NY * NZ, SXY = NX * NY;
   const cellV = new Int32Array(N).fill(-1);
   const P = new GrowF32(1 << 16);
   const corner = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]];
@@ -843,28 +869,7 @@ function remeshVoxel(L, res, opts = {}) {
       quad(c00, c10, c11, c01, !s0);
     }
   }
-  const npos = P.copy(), nidx = I.copy();
-  const out = makeLevel(npos, nidx, nOut);
-  // projection sur la surface d'origine + transfert couleurs / groupes
-  const bvh = new BVH(pos, idx);
-  const cp = { tri: -1 };
-  const triG = new Uint32Array(nOut);
-  const maxProj = 1.5 * h;
-  for (let v = 0; v < nOut; v++) {
-    const o = 3 * v;
-    bvh.closest(npos[o], npos[o + 1], npos[o + 2], cp);
-    if (cp.tri < 0) continue;
-    triG[v] = L.groups[cp.tri];
-    const a = idx[3 * cp.tri], b = idx[3 * cp.tri + 1], c = idx[3 * cp.tri + 2];
-    for (let q = 0; q < 4; q++) out.col[4 * v + q] = Math.round(L.col[4 * a + q] * cp.u + L.col[4 * b + q] * cp.v + L.col[4 * c + q] * cp.w);
-    if (project && !shell && cp.d2 < maxProj * maxProj) { npos[o] = cp.x; npos[o + 1] = cp.y; npos[o + 2] = cp.z; }
-  }
-  for (let t = 0; t < out.nt; t++) {
-    const a = triG[nidx[3 * t]], b = triG[nidx[3 * t + 1]], c = triG[nidx[3 * t + 2]];
-    out.groups[t] = (b === c) ? b : a;
-  }
-  out.info = { voxels: N, shell };
-  return out;
+  return { pos: P.copy(), idx: I.copy(), nv: nOut };
 }
 function dist2(p, a, b) { const x = p[3 * a] - p[3 * b], y = p[3 * a + 1] - p[3 * b + 1], z = p[3 * a + 2] - p[3 * b + 2]; return x * x + y * y + z * z; }
 
@@ -940,7 +945,7 @@ const Core = {
   GrowF32, GrowU32, buildEdges, computeNormals, BVH, Mesh, closestOnTri,
   makeLevel, makeSubtool, curLevel, getMesh, dropMesh, markDirty, markDirtyList, fullDirty, markAllDirty, DB,
   buildLoopOp, applyLoop, computeFirstNb, subtoolDivide, subtoolStepUp, subtoolStepDown, subtoolSetLevel, subtoolDelLower, subtoolDelHigher, subtoolTransform,
-  icosphere, box, torus, fixOrientation, connectedComponents, mergeLevels, compactLevel, remeshVoxel, parseOBJ, exportOBJ,
+  icosphere, box, torus, fixOrientation, connectedComponents, mergeLevels, compactLevel, remeshVoxel, surfaceNets, parseOBJ, exportOBJ,
 };
 root.Core = Core;
 if (typeof module !== 'undefined' && module.exports) module.exports = Core;

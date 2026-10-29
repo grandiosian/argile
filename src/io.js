@@ -72,6 +72,7 @@ function serializeScene(scene) {
     head.subtools.push(s);
   }
   if (scene.gp) head.gp = { active: scene.gp.active, cursor: scene.gp.cursor, layers: scene.gp.layers.map((l) => ({ name: l.name, visible: l.visible, locked: l.locked, strokes: l.strokes.map((st) => ({ color: st.color, pts: add(st.pts) })) })) };
+  if (scene.curves && scene.curves.length) head.curves = scene.curves;
   const json = new TextEncoder().encode(JSON.stringify(head));
   const hlen = (8 + json.length + 3) & ~3;
   const out = new Uint8Array(hlen + off);
@@ -108,7 +109,9 @@ function deserializeScene(u8) {
     gp.layers = head.gp.layers.map((l) => { const L = root.GP.makeLayer(l.name); L.visible = l.visible; L.locked = l.locked; L.strokes = l.strokes.map((st) => root.GP.makeStroke(st.color, get(st.pts))); return L; });
     if (!gp.layers.length) gp.layers.push(root.GP.makeLayer('Calque 1'));
   }
-  return { subtools, active: head.active || 0, camera: head.camera, gp };
+  const curves = Array.isArray(head.curves) ? head.curves : [];
+  if (curves.length && root.Curves) root.Curves.syncIds(curves);
+  return { subtools, active: head.active || 0, camera: head.camera, gp, curves };
 }
 
 // ------------------------------------------------------------ IndexedDB (sauvegarde auto, propre à ce navigateur)

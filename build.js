@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const src = (f) => fs.readFileSync(path.join(__dirname, 'src', f), 'utf8');
-const scripts = ['core.js', 'sculpt.js', 'gp.js', 'io.js', 'renderer.js', 'app.js'].map((f) => `<script>\n${src(f).replace(/<\/script/gi, '<\\/script')}\n</script>`).join('\n');
+const scripts = ['core.js', 'sculpt.js', 'gp.js', 'curves.js', 'io.js', 'renderer.js', 'app.js'].map((f) => `<script>\n${src(f).replace(/<\/script/gi, '<\\/script')}\n</script>`).join('\n');
 const body = src('index.html') + '\n' + scripts + '\n';
 fs.mkdirSync(path.join(__dirname, 'dist'), { recursive: true });
 fs.writeFileSync(path.join(__dirname, 'dist', 'argile.html'), body);

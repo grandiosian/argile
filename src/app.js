@@ -1,7 +1,7 @@
 /* Argile — application : interface, entrées, actions, annulation. */
 (function () {
 'use strict';
-const { Core, Sculpt, Render, IO, GP } = window;
+const { Core, Sculpt, Render, IO, GP, Curves } = window;
 const { V, Q, Camera, Renderer } = Render;
 const $ = (id) => document.getElementById(id);
 const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -23,6 +23,7 @@ const S = {
   tab: { fingerNav: true, curve: 1, minP: 0.05, eraserEnd: 'smooth', barrel: 'orbit', quick: false },
   hold: { smooth: false, zsub: false, mask: false, erase: false },
   latch: { smooth: false, zsub: false, mask: false, erase: false },
+  curves: [], cvSel: { id: null, a: -1 }, cvTool: 'shape', cvOpt: { ghost: true, keep: false }, cvDef: null, cvPen: null,
 };
 const holdUsed = {};
 const undoStack = [], redoStack = [];
@@ -109,6 +110,8 @@ function applyEntry(e, fwd) {
       break;
     }
     case 'gp': GP.restore(S.gp, fwd ? e.after : e.before); refreshGPLayers(); break;
+    case 'curves': { const sn = fwd ? e.after : e.before; S.cvPen = null; S.curves = Curves.clone(sn.curves); S.cvSel = { ...sn.sel }; Curves.syncIds(S.curves); dropGhost(); cvChanged(); break; }
+    case 'multi': (fwd ? e.list : e.list.slice().reverse()).forEach((x) => applyEntry(x, fwd)); break;
     case 'xform': {
       const t = fwd ? e.fwd : e.inv;
       Core.subtoolTransform(e.st, t.m, t.t[0], t.t[1], t.t[2], t.s);
@@ -167,6 +170,7 @@ function frame() {
       const L = Core.curLevel(st); prepLevel(L, i === S.active);
       items.push({ level: L, active: i === S.active, groups: S.display.groups, wire: S.display.wire, paint: S.display.paint });
     });
+    if (ghost && S.space === 'curves') { prepLevel(ghost.level, false); items.push({ level: ghost.level, active: false, groups: false, wire: S.display.wire, paint: false }); }
     if (S.gp.version !== gpVersion) { gpVersion = S.gp.version; renderer.syncGP('main', GP.buildBatch(GP.visibleStrokes(S.gp))); }
     if (gpLiveDirty) {
       gpLiveDirty = false;
@@ -194,6 +198,7 @@ function drawOverlay() {
     octx.fillStyle = c; octx.fillText(l, ox + V.dot(a, r) * (len + 9), oy - V.dot(a, u) * (len + 9));
   }
   if (S.space === 'gp') { drawGPOverlay(); return; }
+  if (S.space === 'curves') { drawCurvesOverlay(); return; }
   if (!pointer.inside || S.mode !== 'draw') return;
   const type = brushTypeNow();
   const sub = (S.brush.zadd ? 1 : -1) * (pointer.alt ? -1 : 1) < 0;
@@ -208,6 +213,10 @@ function drawOverlay() {
 }
 
 function drawGPOverlay() {
+  drawPlaneGuides();
+  gpCursorOverlay();
+}
+function drawPlaneGuides() {
   const C = S.gp.cursor, c = cam.project(C);
   // grille du plan de dessin
   const pl = S.gpOpt.place;
@@ -228,6 +237,8 @@ function drawGPOverlay() {
     octx.moveTo(c[0] - 15, c[1]); octx.lineTo(c[0] - 5, c[1]); octx.moveTo(c[0] + 5, c[1]); octx.lineTo(c[0] + 15, c[1]);
     octx.moveTo(c[0], c[1] - 15); octx.lineTo(c[0], c[1] - 5); octx.moveTo(c[0], c[1] + 5); octx.lineTo(c[0], c[1] + 15); octx.stroke();
   }
+}
+function gpCursorOverlay() {
   if (!pointer.inside) return;
   const tool = S.hold.erase || (pointer.eraser) ? 'erase' : S.gpTool;
   octx.lineWidth = 1.5;
@@ -427,6 +438,7 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 function downPrimary(e, x, y, forced) {
   if (S.space === 'gp') { gpDown(e, x, y, forced); return; }
+  if (S.space === 'curves') { cvDown(e, x, y); return; }
   const ctrl = e.ctrlKey || e.metaKey;
   if (S.mode !== 'draw' && active()) {
     const [mn, mx] = stBounds(active());
@@ -456,6 +468,9 @@ canvas.addEventListener('pointermove', (e) => {
     case 'gpDraw': for (const ce of list) { const [cx, cy] = localXY(ce); gpMove(cx, cy, ce); } break;
     case 'gpErase': gpEraseMove(x, y); break;
     case 'gpCursor': gpSetCursor(x, y); break;
+    case 'cvDraw': for (const ce of list) { const [cx, cy] = localXY(ce); cvDrawMove(cx, cy); } break;
+    case 'cvPenDrag': cvPenDrag(x, y); break;
+    case 'cvMove': cvMove(x, y); break;
     case 'xform': xformMove(x, y); break;
     case 'pan': cam.pan(x - drag.last[0], y - drag.last[1]); drag.last = [x, y]; req(); break;
     case 'orbit': case 'bg': {
@@ -476,6 +491,9 @@ function endDrag(e) {
   else if (d.kind === 'xform') endXform();
   else if (d.kind === 'gpDraw') gpEnd();
   else if (d.kind === 'gpErase') gpEraseEnd();
+  else if (d.kind === 'cvDraw') cvDrawEnd();
+  else if (d.kind === 'cvPenDrag') { drag = null; cvTouch(); }
+  else if (d.kind === 'cvMove') cvMoveEnd();
   else {
     drag = null;
     if (d.kind === 'bg' && !d.moved) {
@@ -640,6 +658,7 @@ window.addEventListener('keydown', (e) => {
   const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
   const go = (fn) => { e.preventDefault(); fn(); };
   if (mod && k === 'z') return go(() => (e.shiftKey ? redo() : undo()));
+  if (mod && k === 'enter' && S.space === 'curves') return go(() => cvBake(false));
   if (mod && k === 'y') return go(redo);
   if (mod && k === 's') return go(saveProject);
   if (mod && k === 'o') return go(() => $('fileInput').click());
@@ -654,6 +673,16 @@ window.addEventListener('keydown', (e) => {
   if (e.shiftKey && k === 'd') return go(() => stepLevel(-1));
   if (e.shiftKey) return;
   if (k === 'p') return go(() => setSpace(S.space === 'gp' ? 'sculpt' : 'gp'));
+  if (k === 'c') return go(() => setSpace(S.space === 'curves' ? 'sculpt' : 'curves'));
+  if (S.space === 'curves') {
+    const t = { 1: 'shape', 2: 'path', 3: 'pen', 4: 'edit', 5: 'cursor' }[e.key];
+    if (t) return go(() => setCvTool(t));
+    if (k === 'enter') return go(() => cvPenFinish(false));
+    if (k === 'escape') return go(() => { if (S.cvPen) cvPenFinish(false); else { S.cvSel = { id: null, a: -1 }; cvChanged(); } });
+    if (k === 'delete' || k === 'backspace') return go(cvDeleteSelection);
+    if (k === 'f') return go(frameAll);
+    return;
+  }
   if (S.space === 'gp') {
     const t = { 1: 'draw', 2: 'line', 3: 'erase', 4: 'cursor' }[e.key];
     if (t) return go(() => setGPTool(t));
@@ -701,6 +730,7 @@ function newScene() {
     for (const st of S.subtools) for (const L of st.levels) releaseLevel(L);
     S.subtools = [newSubtool('sphere')]; S.active = 0; undoStack.length = 0; redoStack.length = 0;
     S.gp = Object.assign(GP.makeState(), { cursor: [0, 0, 0] }); refreshGPLayers();
+    S.curves = []; S.cvSel = { id: null, a: -1 }; S.cvPen = null; dropGhost(); refreshCurveUI();
     cam.q = [0, 0, 0, 1]; frameAll(); scheduleAutosave();
   });
 }
@@ -819,7 +849,7 @@ async function offerFile(filename, blob) {
 const safeName = (s) => s.replace(/[^\p{L}\p{N}_-]+/gu, '_').replace(/^_+|_+$/g, '') || 'argile';
 function saveProject() {
   run('Enregistrement…', async () => {
-    const bytes = IO.serializeScene({ subtools: S.subtools, active: S.active, camera: cam.toJSON(), gp: S.gp });
+    const bytes = IO.serializeScene({ subtools: S.subtools, active: S.active, camera: cam.toJSON(), gp: S.gp, curves: S.curves });
     await offerFile(safeName(S.subtools[0].name) + '-argile.zip', IO.zipStore([{ name: 'scene.argile', data: bytes }, { name: 'LISEZMOI.txt', data: new TextEncoder().encode('Projet Argile Sculpt. Ouvrez ce .zip depuis Fichier > Ouvrir.\n') }]));
   });
 }
@@ -859,6 +889,7 @@ function loadProjectBytes(bytes) {
   for (const st of S.subtools) for (const L of st.levels) releaseLevel(L);
   S.subtools = sc.subtools; S.active = Math.min(sc.active, sc.subtools.length - 1);
   S.gp = sc.gp ? Object.assign(sc.gp, { cursor: sc.gp.cursor || [0, 0, 0] }) : Object.assign(GP.makeState(), { cursor: [0, 0, 0] }); refreshGPLayers();
+  S.curves = sc.curves || []; S.cvSel = { id: null, a: -1 }; S.cvPen = null; dropGhost(); refreshCurveUI();
   undoStack.length = 0; redoStack.length = 0;
   if (sc.camera) cam.fromJSON(sc.camera); else frameAll();
   updateBounds(); refreshUI(); req();
@@ -875,7 +906,7 @@ function scheduleAutosave() {
   clearTimeout(autosaveTimer);
   autosaveTimer = setTimeout(() => {
     if (drag || busyCount) return scheduleAutosave();
-    try { IO.autosavePut(IO.serializeScene({ subtools: S.subtools, active: S.active, camera: cam.toJSON(), gp: S.gp })).catch(() => {}); } catch (_) { /* stockage indisponible */ }
+    try { IO.autosavePut(IO.serializeScene({ subtools: S.subtools, active: S.active, camera: cam.toJSON(), gp: S.gp, curves: S.curves })).catch(() => {}); } catch (_) { /* stockage indisponible */ }
   }, 2500);
 }
 
@@ -933,7 +964,8 @@ function refreshUI() {
   $('lazyBtn').classList.toggle('on', S.brush.lazy); $('penSizeBtn').classList.toggle('on', S.brush.penSize);
   ['symX', 'symY', 'symZ'].forEach((id, i) => $(id).classList.toggle('on', S.sym[i]));
   $('wireBtn').classList.toggle('on', S.display.wire); $('groupsBtn').classList.toggle('on', S.display.groups);
-  $('spaceSculpt').classList.toggle('on', S.space === 'sculpt'); $('spaceGP').classList.toggle('on', S.space === 'gp');
+  $('spaceSculpt').classList.toggle('on', S.space === 'sculpt'); $('spaceGP').classList.toggle('on', S.space === 'gp'); $('spaceCurves').classList.toggle('on', S.space === 'curves');
+  document.querySelectorAll('[data-cvtool]').forEach((el) => el.classList.toggle('on', el.dataset.cvtool === S.cvTool));
   document.querySelectorAll('[data-gptool]').forEach((el) => el.classList.toggle('on', el.dataset.gptool === S.gpTool));
   document.querySelectorAll('.sw').forEach((el) => el.classList.toggle('on', el.dataset.hex === rgbHex(S.gpOpt.color)));
   $('gpFrontBtn').classList.toggle('on', S.gpOpt.front);
@@ -1020,6 +1052,454 @@ function bindUI() {
   new ResizeObserver(() => req()).observe(view);
 }
 
+// ------------------------------------------------------------ Courbes de Bézier → maillages
+const CV_TOOLS = [
+  { id: 'shape', code: 'Fo', key: '1', label: 'Forme', hint: 'Dessine un contour fermé à main levée ; il devient un solide à plat' },
+  { id: 'path', code: 'Co', key: '2', label: 'Courbe', hint: 'Dessine un tracé ouvert à main levée ; il devient un cylindre extrudé' },
+  { id: 'pen', code: 'Pl', key: '3', label: 'Plume', hint: 'Clic = point anguleux, glisser = point lisse, premier point = fermer, Entrée = terminer' },
+  { id: 'edit', code: 'Éd', key: '4', label: 'Éditer', hint: 'Glisser points et poignées ; double-clic sur la courbe ajoute un point, sur un point le rend lisse ou anguleux' },
+  { id: 'cursor', code: '3D', key: '5', label: 'Curseur 3D', hint: 'Place le curseur qui fixe la profondeur des plans' },
+];
+const cvSel = () => S.curves.find((c) => c.id === S.cvSel.id) || null;
+let cvLinesCache = null, ghost = null, ghostTimer = 0, cvParamBefore = null, lastDown = { t: 0, x: 0, y: 0 };
+const sR = () => Math.max(1e-3, sceneRadius);
+function cvTouch() { cvLinesCache = null; req(); }
+function cvChanged(now) { cvLinesCache = null; scheduleGhost(now); refreshCurveUI(); req(); }
+function cvSnap() { return { curves: Curves.clone(S.curves), sel: { ...S.cvSel } }; }
+function cvCommit(label, before) { pushUndo({ type: 'curves', label, before, after: cvSnap() }); }
+function cvEdit(label, fn) { const before = cvSnap(); fn(); cvCommit(label, before); cvChanged(); }
+function nextName(base) { let n = 1; const names = new Set(S.curves.map((c) => c.name)); while (names.has(base + ' ' + n)) n++; return base + ' ' + n; }
+function cvDefaults() {
+  if (!S.cvDef) { const k = sR(); S.cvDef = Object.assign({}, Curves.DEFAULTS.shape, Curves.DEFAULTS.sweep, { thickness: 0.12 * k, bevel: 0.015 * k, radius: 0.05 * k }); }
+  return Object.assign({}, S.cvDef);
+}
+// Plan de travail : plans fixes passant par le curseur 3D, ou plan de vue ; normale tournée vers la caméra
+function placePlane() {
+  const p = S.gpOpt.place, o = S.gp.cursor.slice();
+  let u, v;
+  if (p === 'xy') { u = [1, 0, 0]; v = [0, 1, 0]; } else if (p === 'xz') { u = [1, 0, 0]; v = [0, 0, -1]; } else if (p === 'yz') { u = [0, 1, 0]; v = [0, 0, 1]; }
+  else { const b = cam.basis(); u = b.r; v = b.u; }
+  let n = V.cross(u, v);
+  if (V.dot(n, cam.basis().b) < 0) { n = V.scale(n, -1); v = V.scale(v, -1); }
+  return { o, u, v, n };
+}
+function rayPlane(x, y, o, n) {
+  const r = cam.ray(x, y), dn = V.dot(r.d, n); if (Math.abs(dn) < 1e-6) return null;
+  const t = V.dot(V.sub(o, r.o), n) / dn; return t > 0 ? V.add(r.o, V.scale(r.d, t)) : null;
+}
+function shapePlane(points) {
+  if (S.gpOpt.place === 'surface') return Curves.fitPlane(points, cam.basis().b);
+  const pl = placePlane(); let c = [0, 0, 0]; for (const p of points) c = V.add(c, p);
+  pl.o = Curves.projectOnPlane(pl, V.scale(c, 1 / points.length)); return pl;
+}
+const cvUp = () => (S.gpOpt.place === 'surface' || S.gpOpt.place === 'view' ? cam.basis().b : placePlane().n);
+function newShape(pts, plane, name) {
+  const c = Curves.makeCurve('shape', pts, true, { plane, params: cvDefaults(), name: name || nextName('Forme') });
+  c.params.anchor = S.gpOpt.place === 'surface' ? 'top' : 'center';
+  Curves.flattenToPlane(c); return c;
+}
+const hitR = (e) => (e && (e.pointerType === 'pen' || e.pointerType === 'touch') ? 15 : 9);
+const proj2 = (p) => cam.project(p);
+
+function cvDown(e, x, y) {
+  const dbl = now() - lastDown.t < 380 && Math.hypot(x - lastDown.x, y - lastDown.y) < 10;
+  lastDown = { t: dbl ? 0 : now(), x, y };
+  const tool = S.cvTool;
+  if (tool === 'cursor') { drag = { kind: 'gpCursor' }; gpSetCursor(x, y); return; }
+  if (tool === 'pen') { cvPenDown(e, x, y, dbl); return; }
+  if (tool === 'edit') { cvEditDown(e, x, y, dbl); return; }
+  const pl = gpPlace(x, y);
+  drag = { kind: 'cvDraw', tool, raw: pl ? [pl.p] : [], screen: [[x, y]], smooth: [x, y], last: [x, y] };
+  req();
+}
+function cvDrawMove(x, y) {
+  const d = drag, k = S.gpOpt.stab;
+  d.smooth = [d.smooth[0] + (x - d.smooth[0]) * (1 - k), d.smooth[1] + (y - d.smooth[1]) * (1 - k)];
+  const [sx, sy] = d.smooth;
+  if (Math.hypot(sx - d.last[0], sy - d.last[1]) < 2) return;
+  d.last = [sx, sy]; d.screen.push([sx, sy]);
+  const pl = gpPlace(sx, sy); if (pl) d.raw.push(pl.p);
+  req();
+}
+function cvDrawEnd() {
+  const d = drag; drag = null; req();
+  if (d.raw.length < 4) { hint('Tracé trop court.'); return; }
+  let c0 = [0, 0, 0]; for (const p of d.raw) c0 = V.add(c0, p); c0 = V.scale(c0, 1 / d.raw.length);
+  const tol = 2.5 * cam.pixelSize(c0), closed = d.tool === 'shape';
+  const pts = Curves.fitPath(d.raw, tol, closed);
+  if (!pts || pts.length < 2) { hint('Tracé trop court.'); return; }
+  const c = closed ? newShape(pts, shapePlane(d.raw)) : Curves.makeCurve('sweep', pts, false, { up: cvUp(), params: cvDefaults(), name: nextName('Courbe') });
+  cvEdit(closed ? 'nouvelle forme' : 'nouvelle courbe', () => { S.curves.push(c); S.cvSel = { id: c.id, a: -1 }; });
+  hint(c.name + ' : ' + c.pts.length + ' points de Bézier. Outil Éditer (4) pour l’ajuster, puis « Créer le SubTool ».');
+}
+
+// ---- plume
+function cvPenDown(e, x, y, dbl) {
+  let c = S.cvPen ? S.curves.find((q) => q.id === S.cvPen.id) : null;
+  if (c && dbl && c.pts.length >= 2) { cvPenFinish(false); drag = { kind: 'none' }; return; }
+  if (c && c.pts.length >= 3) {
+    const f = proj2(c.pts[0].p);
+    if (f && Math.hypot(f[0] - x, f[1] - y) < hitR(e) + 3) { cvPenFinish(true); drag = { kind: 'none' }; return; }
+  }
+  const pl = gpPlace(x, y);
+  if (!pl) { toast('Aucun point d’appui ici : visez un objet ou changez le plan de dessin.', true); drag = { kind: 'none' }; return; }
+  if (!c) {
+    const before = cvSnap();
+    c = Curves.makeCurve('sweep', [], false, { up: cvUp(), params: cvDefaults(), name: nextName('Courbe') });
+    S.curves.push(c); S.cvPen = { id: c.id, before };
+  }
+  c.pts.push(Curves.anchor(pl.p, null, null, false));
+  S.cvSel = { id: c.id, a: c.pts.length - 1 };
+  drag = { kind: 'cvPenDrag', c, idx: c.pts.length - 1, start: [x, y], moved: false };
+  cvTouch(); refreshCurveUI();
+}
+function cvPenDrag(x, y) {
+  const d = drag, A = d.c.pts[d.idx];
+  if (!d.moved && Math.hypot(x - d.start[0], y - d.start[1]) < 5) return;
+  d.moved = true;
+  const n = S.gpOpt.place === 'surface' || S.gpOpt.place === 'view' ? cam.basis().b : placePlane().n;
+  const q = rayPlane(x, y, A.p, n); if (!q) return;
+  A.o = q; A.i = V.sub(V.scale(A.p, 2), q); A.smooth = true;
+  cvTouch();
+}
+function cvPenFinish(close) {
+  const st = S.cvPen; if (!st) return;
+  S.cvPen = null;
+  const i = S.curves.findIndex((q) => q.id === st.id); if (i < 0) return;
+  const c = S.curves[i];
+  if (close && c.pts.length >= 3) {
+    const pts = []; for (const A of c.pts) pts.push(A.p, A.i, A.o);
+    const shape = newShape(c.pts, shapePlane(pts), c.name.replace('Courbe', 'Forme'));
+    shape.id = c.id; S.curves[i] = shape;
+    hint('Forme fermée : ' + shape.pts.length + ' points.');
+  } else if (c.pts.length < 2) { S.curves.splice(i, 1); S.cvSel = { id: null, a: -1 }; cvChanged(); return; }
+  else hint('Courbe terminée : ' + c.pts.length + ' points.');
+  cvCommit(close ? 'forme à la plume' : 'courbe à la plume', st.before);
+  cvChanged(true);
+}
+
+// ---- édition
+function cvHit(x, y, e) {
+  const R = hitR(e), sel = cvSel();
+  if (sel && sel.visible) {
+    const n = sel.pts.length;
+    for (let i = 0; i < n; i++) for (const w of ['i', 'o']) {
+      if (!sel.closed && ((i === 0 && w === 'i') || (i === n - 1 && w === 'o'))) continue;
+      const A = sel.pts[i]; if (V.len(V.sub(A[w], A.p)) < 1e-9) continue;
+      const q = proj2(A[w]); if (q && Math.hypot(q[0] - x, q[1] - y) < R) return { type: 'handle', c: sel, idx: i, which: w };
+    }
+  }
+  const order = sel ? [sel, ...S.curves.filter((c) => c !== sel)] : S.curves;
+  for (const c of order) {
+    if (!c.visible) continue;
+    for (let i = 0; i < c.pts.length; i++) { const q = proj2(c.pts[i].p); if (q && Math.hypot(q[0] - x, q[1] - y) < R) return { type: 'anchor', c, idx: i }; }
+  }
+  let best = null;
+  for (const c of order) { if (!c.visible || c.pts.length < 2) continue; const r = Curves.nearest(c, proj2, x, y, 24); if (r.d < R && (!best || r.d < best.d)) best = { type: 'curve', c, k: r.k, t: r.t, d: r.d }; }
+  return best;
+}
+function cvEditDown(e, x, y, dbl) {
+  const h = cvHit(x, y, e);
+  if (!h) { if (S.cvSel.id !== null) { S.cvSel = { id: null, a: -1 }; cvChanged(); } drag = { kind: 'bg', start: [x, y], last: [x, y], moved: false }; return; }
+  const c = h.c;
+  if (S.cvSel.id !== c.id) { S.cvSel = { id: c.id, a: -1 }; scheduleGhost(); }
+  if (h.type === 'anchor' && (dbl || e.altKey)) { cvEdit('point lisse / angle', () => { S.cvSel.a = h.idx; Curves.setSmooth(c, h.idx, !c.pts[h.idx].smooth); }); drag = { kind: 'none' }; return; }
+  if (h.type === 'curve' && dbl) { cvEdit('ajout d’un point', () => { S.cvSel.a = Curves.splitAt(c, h.k, h.t); }); drag = { kind: 'none' }; return; }
+  if (h.type !== 'handle') S.cvSel.a = h.type === 'anchor' ? h.idx : -1;
+  const ref = h.type === 'anchor' ? c.pts[h.idx].p : h.type === 'handle' ? c.pts[h.idx][h.which] : Curves.bez(Curves.segment(c, h.k), h.t);
+  drag = { kind: 'cvMove', h, c, before: cvSnap(), moved: false, start: [x, y], grab: ref.slice() };
+  refreshCurveUI(); req();
+}
+function cvTarget(c, ref, x, y) {
+  if (c.kind === 'shape' && c.plane) return rayPlane(x, y, c.plane.o, c.plane.n);
+  if (S.gpOpt.place === 'surface') { const h = pickAny(x, y); if (h) return h.p; }
+  const n = S.gpOpt.place === 'view' || S.gpOpt.place === 'surface' ? cam.basis().b : placePlane().n;
+  return rayPlane(x, y, ref, n);
+}
+function cvMove(x, y) {
+  const d = drag, h = d.h, c = d.c;
+  if (!d.moved && Math.hypot(x - d.start[0], y - d.start[1]) < 3) return;
+  d.moved = true;
+  if (h.type === 'curve') {
+    const n = c.kind === 'shape' && c.plane ? c.plane.n : cam.basis().b;
+    const q = rayPlane(x, y, d.grab, n); if (!q) return;
+    Curves.translate(c, V.sub(q, d.grab)); d.grab = q;
+  } else {
+    const ref = h.type === 'anchor' ? c.pts[h.idx].p : c.pts[h.idx][h.which];
+    const q = cvTarget(c, ref, x, y); if (!q) return;
+    if (h.type === 'anchor') Curves.moveAnchor(c, h.idx, q); else Curves.moveHandle(c, h.idx, h.which, q);
+  }
+  dropGhost(); cvTouch();
+}
+function cvMoveEnd() {
+  const d = drag; drag = null;
+  if (d.moved) { cvCommit({ anchor: 'déplacer un point', handle: 'déplacer une poignée', curve: 'déplacer la courbe' }[d.h.type], d.before); }
+  cvChanged(true);
+}
+function cvDeleteSelection() {
+  const c = cvSel(); if (!c) return;
+  if (S.cvSel.a >= 0) {
+    if (!Curves.removeAnchor(c, S.cvSel.a)) { toast('Une ' + (c.closed ? 'forme garde au moins 3 points.' : 'courbe garde au moins 2 points.')); return; }
+    const a = S.cvSel.a; cvEdit('supprimer le point', () => { S.cvSel.a = Math.min(a, c.pts.length - 1); });
+    return;
+  }
+  cvEdit('supprimer ' + c.name, () => { S.curves = S.curves.filter((q) => q !== c); S.cvSel = { id: null, a: -1 }; });
+}
+
+// ---- aperçu 3D et création
+function dropGhost() { if (ghost) { releaseLevel(ghost.level); ghost = null; req(); } }
+function scheduleGhost(nowFlag) { clearTimeout(ghostTimer); ghostTimer = setTimeout(buildGhost, nowFlag ? 0 : 180); }
+function buildGhost() {
+  dropGhost();
+  if (S.space !== 'curves' || !S.cvOpt.ghost || (drag && /^cv/.test(drag.kind))) return;
+  const c = cvSel(); if (!c || c.pts.length < 2 || S.cvPen) return;
+  try {
+    const m = Curves.bake(c, S.curves, { res: Math.min(c.params.res, 96) });
+    if (m && m.nv) ghost = { id: c.id, level: Core.makeLevel(m.pos, m.idx, m.nv) };
+  } catch (err) { hint(err.message); }
+  req();
+}
+function cvBake(all) {
+  if (S.cvPen) cvPenFinish(false);
+  const list = all ? S.curves.filter((c) => c.visible && c.pts.length >= 2) : [cvSel()].filter((c) => c && c.pts.length >= 2);
+  if (!list.length) { toast(all ? 'Aucune courbe visible.' : 'Sélectionnez une courbe ou une forme dans la liste.'); return; }
+  run('Création du maillage…', () => {
+    const beforeScene = snapScene(), beforeCv = cvSnap();
+    let made = 0, faces = 0;
+    for (const c of list) {
+      const m = Curves.bake(c, S.curves); if (!m || !m.nv) continue;
+      const L = Core.makeLevel(m.pos, m.idx, m.nv);
+      S.subtools.push(Core.makeSubtool(c.name, L)); made++; faces += L.nt;
+    }
+    if (!made) { toast('Impossible de créer un maillage avec cette courbe.', true); return; }
+    S.active = S.subtools.length - 1;
+    const list2 = [{ type: 'scene', before: beforeScene, after: snapScene() }];
+    if (!S.cvOpt.keep) {
+      const ids = new Set(list.map((c) => c.id)); S.curves = S.curves.filter((c) => !ids.has(c.id)); S.cvSel = { id: null, a: -1 };
+      list2.push({ type: 'curves', before: beforeCv, after: cvSnap() });
+    }
+    pushUndo({ type: 'multi', label: made > 1 ? made + ' maillages' : 'maillage ' + list[0].name, list: list2 });
+    dropGhost(); cvChanged(); updateBounds();
+    toast(made + ' SubTool' + (made > 1 ? 's' : '') + ' créé' + (made > 1 ? 's' : '') + ' (' + fmtN(faces) + ' faces). Passez en Sculpt pour ' + (made > 1 ? 'les' : 'le') + ' travailler.');
+  });
+}
+function gpToCurves() {
+  const strokes = GP.visibleStrokes(S.gp);
+  if (!strokes.length) { toast('Aucun trait visible à convertir.'); return; }
+  let n = 0;
+  cvEdit('traits → courbes', () => {
+    for (const s of strokes) {
+      const cnt = GP.count(s), pts = []; let r = 0;
+      for (let i = 0; i < cnt; i++) { pts.push([s.pts[4 * i], s.pts[4 * i + 1], s.pts[4 * i + 2]]); r += s.pts[4 * i + 3]; }
+      r /= cnt;
+      const fit = Curves.fitPath(pts, Math.max(r * 0.35, sR() * 1e-4), false); if (!fit) continue;
+      const c = Curves.makeCurve('sweep', fit, false, { up: cam.basis().b, params: Object.assign(cvDefaults(), { radius: r }), name: nextName('Trait') });
+      S.curves.push(c); S.cvSel = { id: c.id, a: -1 }; n++;
+    }
+  });
+  setSpace('curves'); setCvTool('edit');
+  toast(n + ' trait(s) convertis en courbes éditables.');
+}
+
+// ---- dessin dans le viewport
+function drawPolyline(pts, closed) {
+  let started = false; octx.beginPath();
+  for (const p of pts) { const q = proj2(p); if (!q) { started = false; continue; } if (!started) { octx.moveTo(q[0], q[1]); started = true; } else octx.lineTo(q[0], q[1]); }
+  if (closed && started) octx.closePath();
+}
+function drawCurvesOverlay() {
+  drawPlaneGuides();
+  const sel = cvSel();
+  for (const c of S.curves) {
+    if (!c.visible || !c.pts.length) continue;
+    const isSel = c === sel, col = c.kind === 'shape' ? '227,164,79' : '127,178,229';
+    const pts = Curves.polyline(c, 20);
+    if (c.kind === 'shape' && pts.length > 2 && !(isSel && ghost)) { drawPolyline(pts, true); octx.fillStyle = 'rgba(' + col + ',' + (isSel ? 0.14 : 0.07) + ')'; octx.fill(); }
+    drawPolyline(pts, c.closed);
+    octx.strokeStyle = 'rgba(' + col + ',' + (isSel ? 1 : 0.6) + ')'; octx.lineWidth = isSel ? 2.5 : 1.5; octx.stroke();
+  }
+  if (sel && sel.visible) {
+    if (!ghost || (drag && /^cv/.test(drag.kind))) {
+      if (!cvLinesCache) { try { cvLinesCache = Curves.previewLines(sel, S.curves); } catch (_) { cvLinesCache = []; } }
+      octx.strokeStyle = 'rgba(235,229,220,.28)'; octx.lineWidth = 1;
+      for (const l of cvLinesCache) { drawPolyline(l, false); octx.stroke(); }
+    }
+    const n = sel.pts.length;
+    sel.pts.forEach((A, i) => {
+      const p = proj2(A.p); if (!p) return;
+      for (const w of ['i', 'o']) {
+        if (!sel.closed && ((i === 0 && w === 'i') || (i === n - 1 && w === 'o'))) continue;
+        if (V.len(V.sub(A[w], A.p)) < 1e-9) continue;
+        const q = proj2(A[w]); if (!q) continue;
+        octx.strokeStyle = 'rgba(235,229,220,.55)'; octx.lineWidth = 1; octx.beginPath(); octx.moveTo(p[0], p[1]); octx.lineTo(q[0], q[1]); octx.stroke();
+        octx.fillStyle = '#ebe5dc'; octx.beginPath(); octx.arc(q[0], q[1], 4, 0, Math.PI * 2); octx.fill();
+      }
+      const on = i === S.cvSel.a;
+      octx.fillStyle = on ? '#e3a44f' : '#201f1d'; octx.strokeStyle = on ? '#fff' : '#e3a44f'; octx.lineWidth = 1.5;
+      octx.beginPath();
+      if (A.smooth) octx.arc(p[0], p[1], 5.5, 0, Math.PI * 2); else octx.rect(p[0] - 5, p[1] - 5, 10, 10);
+      octx.fill(); octx.stroke();
+    });
+  }
+  // tracé en cours / plume
+  if (drag && drag.kind === 'cvDraw' && drag.screen.length > 1) {
+    octx.strokeStyle = 'rgba(240,180,95,.95)'; octx.lineWidth = 2; octx.setLineDash([5, 4]); octx.beginPath();
+    drag.screen.forEach(([x, y], i) => (i ? octx.lineTo(x, y) : octx.moveTo(x, y)));
+    if (drag.tool === 'shape') octx.closePath();
+    octx.stroke(); octx.setLineDash([]);
+  }
+  if (S.cvPen && pointer.inside && !(drag && drag.kind === 'cvPenDrag')) {
+    const c = S.curves.find((q) => q.id === S.cvPen.id);
+    if (c && c.pts.length) {
+      const a = proj2(c.pts[c.pts.length - 1].p), f = proj2(c.pts[0].p);
+      if (a) { octx.strokeStyle = 'rgba(235,229,220,.6)'; octx.setLineDash([4, 4]); octx.beginPath(); octx.moveTo(a[0], a[1]); octx.lineTo(pointer.x, pointer.y); octx.stroke(); octx.setLineDash([]); }
+      if (f && c.pts.length >= 3 && Math.hypot(f[0] - pointer.x, f[1] - pointer.y) < 18) { octx.strokeStyle = '#e3a44f'; octx.lineWidth = 2; octx.beginPath(); octx.arc(f[0], f[1], 10, 0, Math.PI * 2); octx.stroke(); }
+    }
+  }
+  if (!pointer.inside || S.cvTool === 'edit') return;
+  octx.strokeStyle = 'rgba(255,255,255,.85)'; octx.lineWidth = 1; octx.beginPath();
+  octx.moveTo(pointer.x - 9, pointer.y); octx.lineTo(pointer.x + 9, pointer.y); octx.moveTo(pointer.x, pointer.y - 9); octx.lineTo(pointer.x, pointer.y + 9); octx.stroke();
+}
+
+// ---- interface
+function buildCvRail() {
+  const wrap = $('cvTools');
+  for (const t of CV_TOOLS) {
+    const el = document.createElement('button'); el.className = 'brush'; el.dataset.cvtool = t.id;
+    el.title = t.label + ' — ' + t.hint + ' (' + t.key + ')';
+    el.innerHTML = '<span class="code">' + t.code + '</span><span class="key">' + t.key + '</span>';
+    el.addEventListener('click', () => setCvTool(t.id));
+    wrap.appendChild(el);
+  }
+  const ps = $('cvProfile');
+  for (const p of Curves.PROFILES) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.label; ps.appendChild(o); }
+}
+function setCvTool(t) {
+  if (S.cvPen && t !== 'pen') cvPenFinish(false);
+  S.cvTool = t; if (S.space !== 'curves') setSpace('curves');
+  const d = CV_TOOLS.find((x) => x.id === t); hint(d.label + ' — ' + d.hint);
+  canvas.style.cursor = t === 'edit' ? 'default' : 'none';
+  refreshUI(); req();
+}
+const wMin = () => sR() * 0.002, wMax = () => sR() * 1.5;
+const toW = (v) => wMin() * Math.pow(wMax() / wMin(), v / 1000);
+const fromW = (x) => Math.max(0, Math.min(1000, Math.round(1000 * Math.log(Math.max(x, wMin()) / wMin()) / Math.log(wMax() / wMin()))));
+const fmtW = (x) => (x === 0 ? '0' : x < 0.01 ? x.toFixed(4) : x < 0.1 ? x.toFixed(3) : x.toFixed(2));
+const CV_SLIDERS = [
+  ['cvThick', 'thickness', toW, fromW, fmtW],
+  ['cvBevel', 'bevel', (v) => (v <= 0 ? 0 : toW(v)), (x) => (x <= 0 ? 0 : fromW(x)), fmtW],
+  ['cvInflate', 'inflate', (v) => v / 100, (x) => Math.round(x * 100), (x) => Math.round(x * 100) + ' %'],
+  ['cvRes', 'res', (v) => v, (x) => x, (x) => String(x)],
+  ['cvRadius', 'radius', toW, fromW, fmtW],
+  ['cvSides', 'sides', (v) => v, (x) => x, (x) => String(x)],
+  ['cvAspect', 'aspect', (v) => Math.pow(2, v / 50), (x) => Math.round(50 * Math.log2(x)), (x) => '×' + x.toFixed(2)],
+  ['cvTaperS', 'taperStart', (v) => v / 100, (x) => Math.round(x * 100), (x) => Math.round(x * 100) + ' %'],
+  ['cvTaperE', 'taperEnd', (v) => v / 100, (x) => Math.round(x * 100), (x) => Math.round(x * 100) + ' %'],
+  ['cvTwist', 'twist', (v) => v, (x) => x, (x) => x + '°'],
+  ['cvRotate', 'rotate', (v) => v, (x) => x, (x) => x + '°'],
+  ['cvDensity', 'density', (v) => Math.pow(2, v / 100), (x) => Math.round(100 * Math.log2(x)), (x) => '×' + x.toFixed(2)],
+];
+function setCvParam(key, val, commit) {
+  const c = cvSel(); cvDefaults(); S.cvDef[key] = val;
+  if (c) {
+    if (!cvParamBefore) cvParamBefore = cvSnap();
+    c.params[key] = val; cvLinesCache = null; scheduleGhost();
+    if (commit) { cvCommit('réglage de ' + c.name, cvParamBefore); cvParamBefore = null; }
+  }
+  drawProfilePreview(); req();
+}
+function bindCurvesUI() {
+  const on = (id, fn) => $(id).addEventListener('click', fn);
+  on('spaceCurves', () => setSpace('curves'));
+  on('gpToCurves', gpToCurves);
+  for (const [id, key, to, , fmt] of CV_SLIDERS) {
+    const el = $(id), out = $(id + 'Out');
+    el.addEventListener('input', () => { const v = to(+el.value); out.textContent = fmt(v); setCvParam(key, v, false); });
+    el.addEventListener('change', () => setCvParam(key, to(+el.value), true));
+  }
+  $('cvAnchor').addEventListener('change', (e) => setCvParam('anchor', e.target.value, true));
+  $('cvCaps').addEventListener('change', (e) => setCvParam('caps', e.target.checked, true));
+  $('cvProfile').addEventListener('change', (e) => {
+    setCvParam('profile', e.target.value, false);
+    if (e.target.value === 'shape') { const sh = S.curves.find((c) => c.kind === 'shape'); if (sh && !S.curves.some((c) => c.id === (cvSel() || S.cvDef).profileRef)) setCvParam('profileRef', sh.id, false); }
+    setCvParam('profile', e.target.value, true); refreshCurveUI();
+  });
+  $('cvProfileRef').addEventListener('change', (e) => setCvParam('profileRef', +e.target.value, true));
+  $('cvKind').addEventListener('change', (e) => {
+    const c = cvSel(); if (!c) return;
+    const kind = e.target.value;
+    cvEdit(kind === 'shape' ? 'convertir en forme' : 'convertir en courbe', () => {
+      if (kind === 'shape') {
+        const pts = []; for (const A of c.pts) pts.push(A.p, A.i, A.o);
+        c.plane = c.plane || Curves.fitPlane(pts, c.up || cam.basis().b); c.kind = 'shape'; c.closed = true; Curves.flattenToPlane(c);
+      } else { c.kind = 'sweep'; if (c.plane) c.up = c.plane.n.slice(); }
+    });
+  });
+  on('cvClose', () => { const c = cvSel(); if (c) cvEdit(c.closed ? 'ouvrir la courbe' : 'fermer la courbe', () => Curves.setClosed(c, !c.closed)); });
+  on('cvDup', () => {
+    const c = cvSel(); if (!c) return;
+    cvEdit('dupliquer ' + c.name, () => {
+      const d = Curves.clone(c); d.id = Curves.makeCurve('sweep', [], false).id; d.name = nextName(c.kind === 'shape' ? 'Forme' : 'Courbe');
+      Curves.translate(d, V.scale(cam.basis().r, sR() * 0.15)); S.curves.push(d); S.cvSel = { id: d.id, a: -1 };
+    });
+  });
+  on('cvDel', () => { const c = cvSel(); if (c) { S.cvSel.a = -1; cvDeleteSelection(); } });
+  on('cvSmooth', () => { const c = cvSel(); if (c && S.cvSel.a >= 0) cvEdit('point lisse / angle', () => Curves.setSmooth(c, S.cvSel.a, !c.pts[S.cvSel.a].smooth)); else toast('Sélectionnez d’abord un point avec l’outil Éditer.'); });
+  on('cvDelPt', () => { if (S.cvSel.a >= 0) cvDeleteSelection(); else toast('Sélectionnez d’abord un point avec l’outil Éditer.'); });
+  $('cvGhost').addEventListener('change', (e) => { S.cvOpt.ghost = e.target.checked; if (e.target.checked) scheduleGhost(true); else dropGhost(); });
+  $('cvKeep').addEventListener('change', (e) => { S.cvOpt.keep = e.target.checked; });
+  on('cvBake', () => cvBake(false)); on('cvBakeAll', () => cvBake(true));
+}
+function drawProfilePreview() {
+  const cv = $('cvProfileCv'); if (!cv || !cv.offsetParent) return;
+  const g = cv.getContext('2d'), w = cv.width, h = cv.height; g.clearRect(0, 0, w, h);
+  const p = cvSel() ? cvSel().params : cvDefaults();
+  const ref = p.profile === 'shape' ? S.curves.find((c) => c.id === p.profileRef && c.kind === 'shape') : null;
+  const poly = Curves.profilePoly(p.profile, p.sides, ref);
+  const ax = p.aspect || 1, s = Math.min((w - 16) / (2 * Math.max(ax, 1)), (h - 12) / 2) * (ax >= 1 ? 1 : 1);
+  g.beginPath(); poly.forEach(([x, y], i) => { const X = w / 2 + x * s * ax, Y = h / 2 - y * s; if (i) g.lineTo(X, Y); else g.moveTo(X, Y); }); g.closePath();
+  g.fillStyle = 'rgba(127,178,229,.25)'; g.fill(); g.strokeStyle = '#7fb2e5'; g.lineWidth = 1.5; g.stroke();
+  g.fillStyle = '#ebe5dc'; for (const [x, y] of poly) { g.beginPath(); g.arc(w / 2 + x * s * ax, h / 2 - y * s, 1.6, 0, Math.PI * 2); g.fill(); }
+}
+function refreshCurveUI() {
+  const list = $('cvList'); if (!list) return;
+  list.innerHTML = '';
+  if (!S.curves.length) { const p = document.createElement('p'); p.className = 'note'; p.textContent = 'Aucune courbe. Outils Forme (1), Courbe (2) ou Plume (3) pour commencer.'; list.appendChild(p); }
+  for (const c of S.curves) {
+    const row = document.createElement('div'); row.className = 'cv' + (c.id === S.cvSel.id ? ' on' : '');
+    const eye = document.createElement('button'); eye.className = 'eye' + (c.visible ? '' : ' off'); eye.textContent = c.visible ? '◉' : '○'; eye.title = c.visible ? 'Masquer' : 'Afficher';
+    eye.addEventListener('click', (ev) => { ev.stopPropagation(); cvEdit(c.visible ? 'masquer la courbe' : 'afficher la courbe', () => { c.visible = !c.visible; }); });
+    const kind = document.createElement('span'); kind.className = 'kind'; kind.textContent = c.kind === 'shape' ? 'SOL' : 'CYL'; kind.title = c.kind === 'shape' ? 'Forme → solide à plat' : 'Courbe → cylindre extrudé';
+    const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = c.name;
+    nm.addEventListener('dblclick', () => {
+      const inp = document.createElement('input'); inp.className = 'nm'; inp.type = 'text'; inp.value = c.name; inp.id = 'cvname-' + c.id;
+      nm.replaceWith(inp); inp.focus(); inp.select();
+      const done = () => { const v = inp.value.trim(); if (v && v !== c.name) cvEdit('renommer', () => { c.name = v; }); else refreshCurveUI(); };
+      inp.addEventListener('blur', done); inp.addEventListener('keydown', (k) => { if (k.key === 'Enter') inp.blur(); if (k.key === 'Escape') { inp.value = c.name; inp.blur(); } });
+    });
+    const cnt = document.createElement('span'); cnt.className = 'cnt'; cnt.textContent = c.pts.length + ' pts';
+    row.append(eye, kind, nm, cnt);
+    row.addEventListener('click', () => { if (S.cvSel.id !== c.id) { S.cvSel = { id: c.id, a: -1 }; cvChanged(true); } });
+    list.appendChild(row);
+  }
+  const c = cvSel(), p = c ? c.params : cvDefaults();
+  $('cvKind').disabled = !c; $('cvKind').value = c ? c.kind : 'shape';
+  for (const id of ['cvClose', 'cvDup', 'cvDel', 'cvBake']) $(id).disabled = !c;
+  $('cvSmooth').disabled = $('cvDelPt').disabled = !c || S.cvSel.a < 0;
+  $('cvClose').textContent = c && c.closed ? 'Ouvrir' : 'Fermer';
+  $('cvShapePal').hidden = !!c && c.kind !== 'shape';
+  $('cvSweepPal').hidden = !!c && c.kind !== 'sweep';
+  for (const [id, key, , from, fmt] of CV_SLIDERS) { $(id).value = from(p[key]); $(id + 'Out').textContent = fmt(p[key]); }
+  $('cvAnchor').value = p.anchor; $('cvCaps').checked = p.caps !== false; $('cvProfile').value = p.profile;
+  const shapes = S.curves.filter((q) => q.kind === 'shape' && q !== c);
+  const rs = $('cvProfileRef'); rs.innerHTML = '';
+  for (const q of shapes) { const o = document.createElement('option'); o.value = q.id; o.textContent = q.name; rs.appendChild(o); }
+  if (!shapes.length) { const o = document.createElement('option'); o.value = 0; o.textContent = 'Dessinez d’abord une forme'; rs.appendChild(o); }
+  rs.value = String(p.profileRef || (shapes[0] ? shapes[0].id : 0));
+  $('cvRefRow').hidden = p.profile !== 'shape';
+  drawProfilePreview();
+}
+
 // ------------------------------------------------------------ interface : Dessin 3D et tablette
 const GP_TOOLS = [
   { id: 'draw', code: 'Dr', key: '1', label: 'Dessin', hint: 'Trace un trait dans l’espace' },
@@ -1047,10 +1527,12 @@ function buildGPRail() {
   }
 }
 function setSpace(sp) {
+  if (S.space === 'curves' && sp !== 'curves') { if (S.cvPen) cvPenFinish(false); dropGhost(); }
   S.space = sp; document.body.dataset.space = sp;
   if (sp === 'gp') { $('gpPal').open = true; hint(GP_TOOLS.find((t) => t.id === S.gpTool).label + ' — ' + GP_TOOLS.find((t) => t.id === S.gpTool).hint); }
+  else if (sp === 'curves') { const d = CV_TOOLS.find((t) => t.id === S.cvTool); hint(d.label + ' — ' + d.hint); refreshCurveUI(); scheduleGhost(true); }
   else brushHint();
-  canvas.style.cursor = sp === 'gp' || S.mode === 'draw' ? 'none' : 'grab';
+  canvas.style.cursor = sp === 'curves' ? (S.cvTool === 'edit' ? 'default' : 'none') : sp === 'gp' || S.mode === 'draw' ? 'none' : 'grab';
   refreshUI(); req();
 }
 function setGPTool(t) { S.gpTool = t; if (S.space !== 'gp') setSpace('gp'); const d = GP_TOOLS.find((x) => x.id === t); hint(d.label + ' — ' + d.hint); refreshUI(); req(); }
@@ -1154,7 +1636,7 @@ function loadTabletPrefs() {
 
 // ------------------------------------------------------------ démarrage
 async function boot() {
-  buildRail(); bindUI(); buildGPRail(); bindTabletUI(); loadTabletPrefs(); applyTouchUI();
+  buildRail(); bindUI(); buildGPRail(); bindTabletUI(); loadTabletPrefs(); applyTouchUI(); buildCvRail(); bindCurvesUI();
   document.body.dataset.space = S.space; refreshGPLayers(); setGPColor(S.gpOpt.color);
   if (!isMac) document.querySelectorAll('kbd').forEach((k) => { k.textContent = k.textContent.replace('⌘', 'Ctrl+'); });
   try {
@@ -1177,7 +1659,8 @@ async function boot() {
   if (!restored) { S.subtools = [newSubtool('sphere')]; S.active = 0; cam.q = Q.norm(Q.mul(Q.axis([0, 1, 0], -0.35), Q.axis([1, 0, 0], -0.2))); frameAll(); }
   setSize(S.brush.size); brushHint(); refreshUI(); updateBounds(); req();
   requestAnimationFrame(frame);
-  window.argile = { S, cam, Core, Sculpt, GP, undoStack }; // accès console pour le développement
+  refreshCurveUI();
+  window.argile = { S, cam, Core, Sculpt, GP, Curves, undoStack }; // accès console pour le développement
 }
 boot();
 })();

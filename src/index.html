@@ -136,7 +136,19 @@ select.btn { padding-right: 6px; }
 }
 /* ---------- espaces Sculpt / Dessin 3D ---------- */
 body:not([data-space="gp"]) .only-gp { display: none !important; }
-body[data-space="gp"] .only-sculpt { display: none !important; }
+body:not([data-space="sculpt"]) .only-sculpt { display: none !important; }
+body:not([data-space="curves"]) .only-curves { display: none !important; }
+body[data-space="sculpt"] .draw-place { display: none !important; }
+.cv { display: grid; grid-template-columns: 26px 22px 1fr auto; align-items: center; gap: 4px; padding: 5px 6px; border-radius: var(--r); background: var(--panel-2); border: 1px solid transparent; cursor: pointer; }
+.cv.on { border-color: var(--accent); background: var(--accent-soft); }
+.cv .eye { background: none; border: 0; padding: 0; height: 22px; color: var(--muted); font: 12px var(--f-num); }
+.cv .eye.off { color: var(--faint); }
+.cv .kind { font: 600 10px var(--f-num); color: var(--muted); text-align: center; border: 1px solid var(--line); border-radius: 3px; padding: 1px 0; }
+.cv .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv input.nm { background: var(--bg); border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px; }
+.cv .cnt { font: 10px var(--f-num); color: var(--faint); }
+.pal-body .slider { grid-template-columns: 92px 1fr 52px; }
+.pal-body .slider output { font-size: 11px; }
 .space .btn { font-weight: 600; }
 .swatches { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 .sw { height: 22px; border-radius: 4px; border: 1px solid var(--line); padding: 0; }
@@ -192,6 +204,7 @@ body:not(.touchui) .quick { display: none; }
     <div class="seg space" role="group" aria-label="Espace de travail">
       <button class="btn on" id="spaceSculpt" title="Sculpter les maillages">Sculpt</button>
       <button class="btn" id="spaceGP" title="Dessiner des traits dans l'espace (P)">Dessin 3D</button>
+      <button class="btn" id="spaceCurves" title="Formes et courbes de Bézier vers maillage (C)">Courbes</button>
     </div>
     <div class="sep"></div>
     <div class="seg only-sculpt" role="group" aria-label="Mode d'action">
@@ -212,15 +225,15 @@ body:not(.touchui) .quick { display: none; }
       <button class="btn" id="penSizeBtn" title="La pression du stylet fait aussi varier la taille">Pression</button>
     </div>
     <div class="slider only-gp"><label for="gpThick">Épaisseur</label><input type="range" id="gpThick" min="1" max="80" value="6"><output id="gpThickOut">6</output></div>
-    <div class="group only-gp">
-      <select class="btn" id="gpPlace" title="Où poser les traits">
+    <div class="group draw-place">
+      <select class="btn" id="gpPlace" title="Où poser les traits et les courbes">
         <option value="surface">Sur la surface</option>
         <option value="view">Plan de vue (curseur 3D)</option>
         <option value="xz">Plan sol XZ</option>
         <option value="xy">Plan face XY</option>
         <option value="yz">Plan profil YZ</option>
       </select>
-      <button class="btn" id="gpFrontBtn" title="Afficher les traits par-dessus les maillages">Premier plan</button>
+      <button class="btn only-gp" id="gpFrontBtn" title="Afficher les traits par-dessus les maillages">Premier plan</button>
     </div>
     <div class="sep hide-narrow"></div>
     <div class="group only-sculpt" role="group" aria-label="Symétrie">
@@ -249,6 +262,9 @@ body:not(.touchui) .quick { display: none; }
       <div id="alphas" style="display:grid;gap:3px"></div>
       <div class="rail-label">Couleur</div>
       <input type="color" class="swatch" id="color" value="#d64a34" title="Couleur de polypaint">
+    </div>
+    <div class="only-curves" style="display:grid;gap:3px">
+      <div id="cvTools" style="display:grid;gap:3px"></div>
     </div>
     <div class="only-gp" style="display:grid;gap:3px">
       <div id="gpTools" style="display:grid;gap:3px"></div>
@@ -296,7 +312,74 @@ body:not(.touchui) .quick { display: none; }
           <button class="btn" id="gpCursorReset" title="Remet le curseur 3D à l'origine">Curseur au centre</button>
         </div>
         <div class="row"><button class="btn" id="gpConvert" title="Transforme les traits visibles en tubes sculptables">Convertir en SubTool</button></div>
+        <div class="row"><button class="btn" id="gpToCurves" title="Ajuste une courbe de Bézier éditable sur chaque trait visible">Convertir en courbes</button></div>
         <p class="note">Le curseur 3D fixe la profondeur des plans. Après conversion, DynaMesh soude les tubes en un volume.</p>
+      </div>
+    </details>
+
+    <details class="pal only-curves" open id="cvPal">
+      <summary>Courbes</summary>
+      <div class="pal-body">
+        <div class="stlist" id="cvList"></div>
+        <div class="row">
+          <select class="btn" id="cvKind" title="Ce que devient la courbe sélectionnée">
+            <option value="shape">Forme → solide à plat</option>
+            <option value="sweep">Courbe → cylindre extrudé</option>
+          </select>
+        </div>
+        <div class="row">
+          <button class="btn" id="cvClose" title="Ferme ou ouvre la courbe sélectionnée">Fermer</button>
+          <button class="btn" id="cvDup">Dupliquer</button>
+          <button class="btn" id="cvDel">Supprimer</button>
+        </div>
+        <div class="row">
+          <button class="btn" id="cvSmooth" title="Double-clic ou Alt+clic sur un point">Point lisse / angle</button>
+          <button class="btn" id="cvDelPt" title="Suppr">Supprimer le point</button>
+        </div>
+        <p class="note" id="cvHelp">Plume : clic = point anguleux, glisser = point lisse, toucher le premier point ferme la forme, Entrée ou double-clic termine. Éditer : glisser points et poignées, double-clic sur la courbe pour ajouter un point.</p>
+      </div>
+    </details>
+
+    <details class="pal only-curves" open id="cvShapePal">
+      <summary>Forme → solide à plat</summary>
+      <div class="pal-body">
+        <div class="slider"><label for="cvThick">Épaisseur</label><input type="range" id="cvThick" min="0" max="1000" value="500"><output id="cvThickOut"></output></div>
+        <div class="slider"><label for="cvBevel">Arrondi</label><input type="range" id="cvBevel" min="0" max="1000" value="500"><output id="cvBevelOut"></output></div>
+        <div class="slider"><label for="cvInflate">Bombé</label><input type="range" id="cvInflate" min="0" max="100" value="0"><output id="cvInflateOut"></output></div>
+        <div class="field"><label for="cvAnchor">Ancrage</label>
+          <select class="btn" id="cvAnchor"><option value="center">Centré sur le plan</option><option value="top">Posé dessus</option><option value="bottom">Posé dessous</option></select></div>
+        <div class="slider"><label for="cvRes">Résolution</label><input type="range" id="cvRes" min="48" max="384" step="8" value="160"><output id="cvResOut"></output></div>
+      </div>
+    </details>
+
+    <details class="pal only-curves" open id="cvSweepPal">
+      <summary>Courbe → cylindre extrudé</summary>
+      <div class="pal-body">
+        <div class="field"><label for="cvProfile">Profil</label><select class="btn" id="cvProfile"></select></div>
+        <div class="field" id="cvRefRow"><label for="cvProfileRef">Forme de profil</label><select class="btn" id="cvProfileRef"></select></div>
+        <canvas id="cvProfileCv" width="240" height="64" aria-label="Aperçu du profil" style="width:100%;height:64px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r)"></canvas>
+        <div class="slider"><label for="cvRadius">Rayon</label><input type="range" id="cvRadius" min="0" max="1000" value="500"><output id="cvRadiusOut"></output></div>
+        <div class="slider"><label for="cvSides">Côtés</label><input type="range" id="cvSides" min="3" max="64" value="16"><output id="cvSidesOut"></output></div>
+        <div class="slider"><label for="cvAspect">Largeur</label><input type="range" id="cvAspect" min="-100" max="100" value="0"><output id="cvAspectOut"></output></div>
+        <div class="slider"><label for="cvTaperS">Début</label><input type="range" id="cvTaperS" min="0" max="200" value="100"><output id="cvTaperSOut"></output></div>
+        <div class="slider"><label for="cvTaperE">Fin</label><input type="range" id="cvTaperE" min="0" max="200" value="100"><output id="cvTaperEOut"></output></div>
+        <div class="slider"><label for="cvTwist">Torsion</label><input type="range" id="cvTwist" min="-720" max="720" step="15" value="0"><output id="cvTwistOut"></output></div>
+        <div class="slider"><label for="cvRotate">Rotation</label><input type="range" id="cvRotate" min="-180" max="180" step="5" value="0"><output id="cvRotateOut"></output></div>
+        <div class="slider"><label for="cvDensity">Densité</label><input type="range" id="cvDensity" min="-200" max="200" value="0"><output id="cvDensityOut"></output></div>
+        <label class="check"><input type="checkbox" id="cvCaps" checked> Boucher les extrémités</label>
+      </div>
+    </details>
+
+    <details class="pal only-curves" open>
+      <summary>Créer le maillage</summary>
+      <div class="pal-body">
+        <label class="check"><input type="checkbox" id="cvGhost" checked> Aperçu 3D du résultat</label>
+        <label class="check"><input type="checkbox" id="cvKeep"> Garder la courbe après création</label>
+        <div class="row">
+          <button class="btn" id="cvBake" title="Ctrl+Entrée">Créer le SubTool</button>
+          <button class="btn" id="cvBakeAll">Tout créer</button>
+        </div>
+        <p class="note">Le maillage créé est un SubTool sculptable. Pour souder un cylindre à un objet : Fusionner ↓ puis DynaMesh.</p>
       </div>
     </details>
 
@@ -424,7 +507,8 @@ body:not(.touchui) .quick { display: none; }
         <div>Clic droit + glisser : tourner partout</div>
         <div>1–9 : brosses · [ ] : taille · ⇧ : Smooth · ⌥ : ZSub</div>
         <div>Q W E R : Draw, Move, Scale, Rotate</div>
-        <div>P : basculer Sculpt / Dessin 3D · en Dessin 3D, 1–4 : Dessin, Ligne, Gomme, Curseur</div>
+        <div>P : Dessin 3D · C : Courbes · en Dessin 3D, 1–4 : Dessin, Ligne, Gomme, Curseur</div>
+        <div>Courbes : 1–5 Forme, Courbe, Plume, Éditer, Curseur · Suppr efface · Ctrl+Entrée crée le maillage</div>
       </div>
     </details>
   </aside>

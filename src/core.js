@@ -419,6 +419,7 @@ function makeLevel(pos, idx, nv, opts = {}) {
     mask: opts.mask || new Float32Array(nv),
     groups: opts.groups || new Uint32Array(nt),
     hidden: opts.hidden || null,
+    qflags: opts.qflags || null,
     detail: null, ref: null, op: null, firstNb: null,
     mesh: null, nrm: null, gpu: null, dirty: null,
   };

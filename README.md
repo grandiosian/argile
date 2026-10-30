@@ -5,7 +5,7 @@ Prototype de sculpture numérique façon ZBrush, en JavaScript + WebGPU, sans d�
 ## Lancer
 
 - `node build.js` assemble `dist/argile-standalone.html` (à ouvrir dans Safari 26 / Chrome / Edge) et `dist/argile.html` (version artefact).
-- `node test/core.test.js`, `node test/gp.test.js`, `node test/curves.test.js` et `node test/samples.test.js` lancent les tests (Node 20+).
+- `node test/core.test.js`, `node test/gp.test.js`, `node test/curves.test.js`, `node test/samples.test.js` et `node test/surface.test.js` lancent les tests (Node 20+).
 
 ## Version en ligne
 
@@ -40,6 +40,16 @@ Unités réelles conservées à l'export OBJ : bijoux en millimètres, figures e
 
 Aperçu 3D à chaque réglage, puis « Nouvelle scène » ou « Ajouter à la scène » : chaque pièce devient un SubTool sculptable (annulable).
 
+**Modélisation surfacique** : la chevalière (mode par défaut) est une cage de quads paramétrique — sections autour de l'anneau, plateau plan, épaules, boucles de maintien pour des arêtes nettes — lissée par subdivision Catmull-Clark. Le rayon intérieur est corrigé pour tomber sur la taille demandée, le monogramme est gravé par déplacement des sommets, et le maillage reste tout en quads (le polyframe masque les diagonales).
+
+## Espace ZSpheres (Z)
+
+Squelette de sphères éditable, habillé d'une peau adaptative en quads (méthode B-Mesh : tubes à section carrée, enveloppe convexe aux embranchements, anneaux de maintien, puis Catmull-Clark). Départs : humanoïde, chien, chat, cheval, ours, lapin ou sphère seule ; les figures de l'espace Modèles s'ouvrent aussi en ZSpheres (« Éditer les ZSpheres »).
+
+- **Ajouter (1)** : glisser depuis une sphère crée une sphère enfant ; cliquer sur un lien en insère une.
+- **Déplacer (2)**, **Échelle (3)**, **Supprimer (4)** (ou Alt+clic) ; symétrie X ; rayon de la sphère sélectionnée réglable.
+- **A** : aperçu de la peau ; subdivisions 1–4 ; densité des liens. Un polygroupe par partie du corps.
+
 ## Architecture
 
 | Fichier | Rôle |
@@ -49,6 +59,7 @@ Aperçu 3D à chaque réglage, puis « Nouvelle scène » ou « Ajouter à la sc
 | `src/gp.js` | Dessin 3D façon Grease Pencil : calques, traits (x, y, z, rayon), lissage, gomme par points ou traits entiers, conversion en tubes fermés (transport parallèle), lots GPU |
 | `src/curves.js` | Courbes de Bézier 3D : ajustement sur un tracé (Schneider) avec détection des coins, édition (insertion de Casteljau, poignées alignées), plan moyen (ACP), profils, balayage à repères par transport parallèle, forme → solide par champ signé 2D (remplissage + distance euclidienne exacte) et surface nets |
 | `src/sdf.js` | Modélisation par champs de distance : primitives (sphère, ellipsoïde, boîte, cône arrondi, cylindre, tore), unions lissées avec élagage par boîtes englobantes, transformations, étiquettes de polygroupes, mailleur par blocs (seule la bande autour de la surface est évaluée) ; maillages explicites (anneaux, cylindres, fusion, miroir) |
+| `src/surface.js` | Modélisation surfacique : maillages polygonaux, Catmull-Clark avec héritage des polygroupes, orientation cohérente, enveloppe convexe 3D, peau adaptative des ZSpheres, conversion en triangles avec drapeaux de diagonales de quads |
 | `src/samples.js` | Catalogue des modèles paramétriques (bijoux, figures, bâtiments) |
 | `src/io.js` | ZIP (écriture stockée, lecture stockée/deflate), format de projet binaire, sauvegarde auto IndexedDB |
 | `src/renderer.js` | Caméra trackball, rendu WebGPU : traits 3D en rubans + capuchons ronds (test de profondeur ou premier plan) ; draw non indexé qui lit sommets, normales, couleurs, masque et polygroupes dans des storage buffers ; matcaps procéduraux ; polyframe par barycentriques ; envoi GPU par blocs de 1024 sommets |

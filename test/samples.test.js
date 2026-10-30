@@ -76,12 +76,12 @@ for (const s of S.CATALOG) {
   assert(pd[4] < ch[1] + 1 && pd[4] > ch[1] - 6, 'pendentif accroché sous la chaîne');
 }
 {
-  const h = S.build('humanoide', { taille: 30 }, { preview: true });
+  const h = S.build('humanoide', { taille: 30, mode: 'volume' }, { preview: true });
   const bb = bounds(h[0].mesh);
   assert(Math.abs(bb[4] - bb[1] - 30) < 0.01 && Math.abs(bb[1]) < 1e-4, 'humanoïde : 30 cm, pieds au sol (' + (bb[4] - bb[1]).toFixed(1) + ' cm)');
   assert(new Set(h[0].mesh.groups).size === 5, 'humanoïde : 5 polygroupes (tête, cou, torse, bras, jambes)');
   for (const e of ['chat', 'cheval', 'ours', 'lapin', 'oiseau', 'poisson']) {
-    const a = S.build('animal', { espece: e }, { preview: true, previewRes: 56 });
+    const a = S.build('animal', { espece: e, mode: 'volume' }, { preview: true, previewRes: 56 });
     const t = topo(a[0].mesh);
     assert(t.open === 0 && a[0].mesh.idx.length > 1000, 'animal ' + e + ' : fermé, ' + new Set(a[0].mesh.groups).size + ' polygroupes');
   }

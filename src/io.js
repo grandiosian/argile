@@ -65,7 +65,7 @@ function serializeScene(scene) {
     const s = { name: st.name, visible: st.visible, cur: st.cur, levels: [] };
     st.levels.forEach((L, k) => {
       s.levels.push({
-        nv: L.nv, nt: L.nt, pos: add(L.pos), idx: k === 0 ? add(L.idx) : null, col: add(L.col), mask: add(L.mask), groups: add(L.groups), hidden: add(L.hidden),
+        nv: L.nv, nt: L.nt, pos: add(L.pos), idx: k === 0 ? add(L.idx) : null, col: add(L.col), mask: add(L.mask), groups: add(L.groups), hidden: add(L.hidden), qflags: add(L.qflags),
         detail: k > 0 ? add(L.detail) : null, ref: k > 0 ? add(L.ref) : null,
       });
     });
@@ -96,7 +96,7 @@ function deserializeScene(u8) {
       let idx;
       if (k === 0) idx = get(h.idx);
       else { const lo = levels[k - 1]; lo.op = Core.buildLoopOp(lo.idx, lo.nv); idx = lo.op.nidx; }
-      const L = Core.makeLevel(get(h.pos), idx, h.nv, { col: get(h.col), mask: get(h.mask), groups: get(h.groups), hidden: get(h.hidden) });
+      const L = Core.makeLevel(get(h.pos), idx, h.nv, { col: get(h.col), mask: get(h.mask), groups: get(h.groups), hidden: get(h.hidden), qflags: get(h.qflags) });
       if (k > 0) { L.detail = get(h.detail); L.ref = get(h.ref); L.firstNb = Core.computeFirstNb ? Core.computeFirstNb(idx, h.nv) : null; }
       levels.push(L);
     });

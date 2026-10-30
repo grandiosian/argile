@@ -283,7 +283,7 @@ function xformMesh(m, M, t) {
     const x = m.pos[i], y = m.pos[i + 1], z = m.pos[i + 2];
     P[i] = M[0] * x + M[1] * y + M[2] * z + t[0]; P[i + 1] = M[3] * x + M[4] * y + M[5] * z + t[1]; P[i + 2] = M[6] * x + M[7] * y + M[8] * z + t[2];
   }
-  return { pos: P, idx: m.idx, nv: m.nv, groups: m.groups };
+  return { pos: P, idx: m.idx, nv: m.nv, groups: m.groups, qflags: m.qflags };
 }
 // Repère à partir de trois axes (colonnes X, Y, Z locales exprimées en monde)
 const frameM = (X, Y, Z) => [X[0], Y[0], Z[0], X[1], Y[1], Z[1], X[2], Y[2], Z[2]];
@@ -312,7 +312,9 @@ function mirrorMeshX(m, dx = 0) {
   for (let i = 0; i < P.length; i += 3) { P[i] = -m.pos[i] + dx; P[i + 1] = m.pos[i + 1]; P[i + 2] = m.pos[i + 2]; }
   const I = new Uint32Array(m.idx.length);
   for (let t = 0; t < I.length; t += 3) { I[t] = m.idx[t]; I[t + 1] = m.idx[t + 2]; I[t + 2] = m.idx[t + 1]; }
-  return { pos: P, idx: I, nv: m.nv, groups: m.groups };
+  let Q = null;
+  if (m.qflags) { Q = new Uint8Array(m.qflags.length); for (let t = 0; t < Q.length; t++) { const f = m.qflags[t]; Q[t] = (f & 1) | ((f & 2) << 1) | ((f & 4) >> 1); } }
+  return { pos: P, idx: I, nv: m.nv, groups: m.groups, qflags: Q };
 }
 function meshBounds(m) {
   const b = [BIG, BIG, BIG, -BIG, -BIG, -BIG];

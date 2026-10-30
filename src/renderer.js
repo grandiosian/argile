@@ -115,6 +115,7 @@ struct VO {
   @location(2) m: f32,
   @location(3) bary: vec3f,
   @location(4) @interpolate(flat) g: u32,
+  @location(5) @interpolate(flat) q: u32,
 };
 
 @vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
@@ -133,7 +134,8 @@ struct VO {
   if (k == 1u) { b = vec3f(0.0, 1.0, 0.0); }
   if (k == 2u) { b = vec3f(0.0, 0.0, 1.0); }
   o.bary = b;
-  o.g = gg & 0x7fffffffu;
+  o.g = gg & 0x0fffffffu;
+  o.q = (gg >> 28u) & 7u;
   return o;
 }
 
@@ -183,7 +185,10 @@ fn shade(n: vec3f, base: vec3f, mat: f32) -> vec3f {
   var c = shade(nv, base, mat);
   c = c * (1.0 - 0.62 * i.m);
   if (obj.flags.z > 0.5) {
-    let a3 = smoothstep(vec3f(0.0), fw * 1.25, i.bary);
+    var a3 = smoothstep(vec3f(0.0), fw * 1.25, i.bary);
+    if ((i.q & 1u) != 0u) { a3.x = 1.0; }
+    if ((i.q & 2u) != 0u) { a3.y = 1.0; }
+    if ((i.q & 4u) != 0u) { a3.z = 1.0; }
     let e = min(min(a3.x, a3.y), a3.z);
     c = mix(c * 0.32, c, e);
   }
@@ -377,7 +382,8 @@ class Renderer {
     runs(D.mask, (a, n) => q.writeBuffer(g.msk, a * 4, L.mask, a, n));
     if (D.groups) {
       const tmp = new Uint32Array(L.nt);
-      for (let t = 0; t < L.nt; t++) tmp[t] = (L.groups[t] & 0x7fffffff) | (L.hidden && L.hidden[t] ? 0x80000000 : 0);
+      const qf = L.qflags && L.qflags.length === L.nt ? L.qflags : null;
+      for (let t = 0; t < L.nt; t++) tmp[t] = (L.groups[t] & 0x0fffffff) | (qf ? (qf[t] & 7) << 28 : 0) | (L.hidden && L.hidden[t] ? 0x80000000 : 0);
       q.writeBuffer(g.grp, 0, tmp);
     }
     L.dirty = null;

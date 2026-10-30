@@ -4,6 +4,7 @@
 'use strict';
 const SDF = root.SDF || require('./sdf.js');
 const Curves = root.Curves || require('./curves.js');
+const Surface = root.Surface || require('./surface.js');
 const { clamp, smooth01, smin, smax, node, roundRect2, ellipse2, shape2D, sphere, ellipsoid, box, boxMM, roundCone, capsule, cyl, torus,
   union, inter, sub, xform, rot, mirrorX, scale, meshSDF, ringMesh, cylinderMesh, xformMesh, frameM, rotateMesh, translateMesh, mergeMeshes, mirrorMeshX, meshBounds } = SDF;
 
@@ -130,6 +131,114 @@ function signet(p, ctx) {
   let ring = fingerCut(union([band, plate], p.epaule), ri);
   ring = engrave(ring, p, ctx, a, b, plate.top);
   return [part('Chevalière', meshSDF(ring, { res: resOf(ctx, p.res) }))];
+}
+
+// ------------------------------------------------------------ chevalière surfacique (cage de quads + Catmull-Clark)
+function plateProfile(kind, xn) {
+  const u = Math.min(1, Math.abs(xn));
+  switch (kind) {
+    case 'carre': return Math.pow(1 - Math.pow(u, 8), 1 / 8);
+    case 'coussin': return Math.pow(1 - Math.pow(u, 3), 1 / 3);
+    case 'octogone': return Math.min(1, 1.4142 - u);
+    default: return Math.sqrt(Math.max(0, 1 - u * u));
+  }
+}
+function signetCage(p) {
+  const ri = p.taille / (2 * PI);
+  let a = p.plateauW / 2, b = p.plateauL / 2;
+  if (p.forme === 'rond') a = b = Math.min(a, b);
+  const yTop = ri + p.plateauH, dome = p.bombe, dep = p.depouille;
+  const hb = p.bandeW / 2, tb = p.bandeT;
+  const hinTop = Math.min(b * 0.8, Math.max(hb * 1.6, b * 0.62));
+  const phiP = Math.atan(a / yTop), phiS = phiP + clamp(p.epaule / ri, 0.15, 0.95);
+  // angles des sections (0 = haut), denses sur le plateau et ses bords
+  const ang = [];
+  const nP = 12; for (let i = 0; i <= nP; i++) ang.push(-phiP + (2 * phiP * i) / nP);
+  ang.push(-phiP + 0.03, phiP - 0.03);
+  for (let i = 1; i <= 4; i++) { const t = phiP + ((phiS - phiP) * i) / 4; ang.push(t, -t); }
+  const nB = 12; for (let i = 1; i < nB; i++) ang.push(phiS + ((2 * PI - 2 * phiS) * i) / nB);
+  const A = ang.map((x) => ((x % (2 * PI)) + 2 * PI) % (2 * PI)).sort((x, y) => x - y);
+  const uniq = A.filter((x, i) => i === 0 || x - A[i - 1] > 1e-4);
+  const S = uniq.length;
+  const domeY = (x, z) => yTop + dome * Math.max(0, 1 - (x / a) ** 2 - (z / b) ** 2);
+  const eIn = Math.min(0.35, tb * 0.25), eTop = p.arete;
+  const V = [], F = [], G = [];
+  let loopLen = 0;
+  // rayons de contrôle intérieurs : la limite (P[i-1] + 4P[i] + P[i+1]) / 6 doit tomber exactement sur ri
+  const dA = uniq.map((x, i) => { const d = uniq[(i + 1) % S] - x; return d < 0 ? d + 2 * PI : d; });
+  let Rc = uniq.map(() => ri);
+  for (let it = 0; it < 80; it++) Rc = Rc.map((_, i) => (6 * ri - Rc[(i - 1 + S) % S] * Math.cos(dA[(i - 1 + S) % S]) - Rc[(i + 1) % S] * Math.cos(dA[i])) / 4);
+  const sections = uniq.map((phi, si) => {
+    const sp = phi > PI ? phi - 2 * PI : phi;               // angle signé depuis le haut
+    const ap = Math.abs(sp), s = Math.sin(sp), c = Math.cos(sp);
+    const wP = 1 - smooth01((ap - phiP) / (phiS - phiP));    // 1 sur le plateau → 0 sous les épaules
+    const wS = smooth01(1 - (ap - phiP) / (PI - phiP) * 1.15); // élargissement progressif vers le haut
+    const Rin = Rc[si];
+    const hin = hb + (hinTop - hb) * Math.max(wP, wS * 0.85);
+    const tBand = tb + (p.plateauH * 0.55 - tb) * wS;
+    const uBand = Rin + Math.max(tb, tBand);
+    const xPl = yTop * Math.tan(Math.min(ap, phiP + 0.2)) * Math.sign(sp);
+    const houtP = Math.max(b * plateProfile(p.forme, xPl / a), hin * 0.65, 0.4);
+    const hout = wP * houtP + (1 - wP) * Math.max(hin * 0.9, 0.3);
+    const uOut = (z) => {
+      const uPl = c > 0.2 ? domeY(xPl, z) / c : uBand;
+      return wP * uPl + (1 - wP) * uBand;
+    };
+    const uTop = uOut(0);
+    const wallH = Math.min(p.plateauH * 0.45, (uTop - Rin) * 0.45);
+    const uW = wP * (uTop - wallH) + (1 - wP) * (Rin + uBand) / 2;
+    const hw = wP * Math.max(hin, hout * (1 - dep)) + (1 - wP) * Math.max(hin, hout);
+    // contour de la section dans le plan (u radial, z) : intérieur, flanc droit, dessus, flanc gauche
+    const pts = [], kind = [];
+    const push = (u, z, k) => { pts.push([u, z]); kind.push(k); };
+    const seg = (u0, z0, u1, z1, n, h0, h1, k) => {
+      const L = Math.hypot(u1 - u0, z1 - z0) || 1;
+      const ts = [0]; if (h0 > 0) ts.push(Math.min(0.3, h0 / L));
+      for (let i = 1; i <= n; i++) ts.push(i / (n + 1));
+      if (h1 > 0) ts.push(1 - Math.min(0.3, h1 / L));
+      ts.sort((x, y) => x - y).forEach((t) => push(u0 + (u1 - u0) * t, z0 + (z1 - z0) * t, k));
+    };
+    seg(Rin, -hin, Rin, hin, 3, eIn, eIn, 0);                 // intérieur
+    seg(Rin, hin, uW, hw, 1, eIn, 0, 3);                       // flanc droit (bas)
+    seg(uW, hw, uTop, hout, 0, 0, eTop, 3);                     // flanc droit (haut)
+    seg(uTop, hout, uTop, -hout, 7, eTop, eTop, wP > 0.5 ? 1 : 2); // dessus
+    seg(uTop, -hout, uW, -hw, 0, eTop, 0, 3);                   // flanc gauche (haut)
+    seg(uW, -hw, Rin, -hin, 1, 0, eIn, 3);                      // flanc gauche (bas)
+    loopLen = pts.length;
+    const idx = pts.map(([u, z], k) => {
+      const uu = kind[k] === 1 || kind[k] === 2 ? uOut(z) : u;
+      V.push([s * uu, c * uu, z]); return V.length - 1;
+    });
+    return { idx, kind };
+  });
+  for (let i = 0; i < S; i++) {
+    const A0 = sections[i].idx, B0 = sections[(i + 1) % S].idx;
+    for (let k = 0; k < loopLen; k++) {
+      const k2 = (k + 1) % loopLen;
+      F.push([A0[k], A0[k2], B0[k2], B0[k]]);
+      G.push(sections[i].kind[k] === sections[i].kind[k2] ? sections[i].kind[k] : 3);
+    }
+  }
+  return { cage: Surface.orient({ V, F, G }), a, b, yTop, ri };
+}
+function signetSurface(p, ctx) {
+  const { cage, a, b, yTop } = signetCage(p);
+  const lv = ctx.preview ? Math.min(2, p.subdiv) : p.subdiv;
+  const m = Surface.toTriMesh(Surface.subdivide(cage, lv));
+  const text = (p.texte || '').trim();
+  if (text && p.gravure !== 'aucune' && ctx.textSDF) {
+    const t2 = ctx.textSDF(text, 2 * a * 0.74, 2 * b * 0.74, !!p.miroir);
+    if (t2) {
+      const cell = (2 * a) / 12 / Math.pow(2, lv) * 1.2, sgn = p.gravure === 'relief' ? 1 : -1;
+      for (let i = 0; i < m.nv * 3; i += 3) {
+        const x = m.pos[i], y = m.pos[i + 1], z = m.pos[i + 2];
+        if (y < yTop - 0.25 || Math.abs(x) > a || Math.abs(z) > b) continue;
+        const cov = clamp(0.5 - t2(x, z) / (2 * cell), 0, 1);
+        if (cov > 0) m.pos[i + 1] = y + sgn * p.profondeur * cov;
+      }
+    }
+  }
+  return [part('Chevalière', m)];
 }
 
 // ------------------------------------------------------------ chevalière à clapet
@@ -410,6 +519,78 @@ function animal(p, ctx) {
   return [part(name, translateMesh(sc, [0, p.espece === 'poisson' ? -(bb[1] + bb[4]) / 2 : -bb[1], 0]))];
 }
 
+// ------------------------------------------------------------ squelettes de ZSpheres
+const ZS_PARTS = ['Torse', 'Tête', 'Bras', 'Mains', 'Jambes', 'Pieds', 'Queue', 'Oreilles'];
+// Ajoute le côté gauche par symétrie : chaque nœud marqué side 'R' est dupliqué (x → -x)
+function mirrorSkeleton(nodes) {
+  const map = new Map(), out = nodes.map((n) => ({ p: n.p.slice(), r: n.r, parent: n.parent, part: n.part }));
+  nodes.forEach((n, i) => { if (n.side === 'R') { map.set(i, out.length); out.push({ p: [-n.p[0], n.p[1], n.p[2]], r: n.r, parent: n.parent, part: n.part }); } });
+  for (const [src, dst] of map) { const par = nodes[src].parent; out[dst].parent = map.has(par) ? map.get(par) : par; }
+  return out;
+}
+function zsHumanoid(p) {
+  const H = p.taille, hu = H / p.tetes, B = H - hu, bu = B / 7, c = p.corpulence, rc = Math.sqrt(c);
+  const sh = 1 + 0.12 * p.silhouette, hp = 1 - 0.1 * p.silhouette, chin = B;
+  const N = [];
+  const add3 = (pp, r, parent, part, side) => { N.push({ p: pp, r, parent, part, side }); return N.length - 1; };
+  const pelvis = add3([0, chin - 3.0 * bu, -0.02 * bu], 0.6 * bu * hp * rc, -1, 0);
+  const waist = add3([0, chin - 2.15 * bu, 0], 0.52 * bu * c, pelvis, 0);
+  const chest = add3([0, chin - 1.25 * bu, 0], 0.68 * bu * sh * rc, waist, 0);
+  const neck = add3([0, chin - 0.2 * bu, -0.03 * bu], 0.24 * bu * rc, chest, 1);
+  const head = add3([0, H - 0.5 * hu, 0.04 * hu], 0.42 * hu, neck, 1);
+  add3([0, H - 0.24 * hu, -0.01 * hu], 0.3 * hu, head, 1);
+  const a = p.bras * DEG, S = [0.86 * bu * sh, chin - 0.72 * bu, -0.04 * bu];
+  const d1 = [Math.sin(a), -Math.cos(a), 0], E = add(S, mul(d1, 1.5 * bu));
+  const d2 = norm([Math.sin(a * 0.85), -Math.cos(a * 0.85), 0.25]), W = add(E, mul(d2, 1.2 * bu));
+  const sR = add3(S, 0.3 * bu * rc, chest, 2, 'R'), eR = add3(E, 0.19 * bu * rc, sR, 2, 'R'), wR = add3(W, 0.12 * bu * rc, eR, 2, 'R');
+  const hR = add3(add(W, mul(d2, 0.42 * bu)), 0.15 * bu, wR, 3, 'R'); add3(add(W, mul(d2, 0.82 * bu)), 0.09 * bu, hR, 3, 'R');
+  const sp = p.jambes * DEG, Hip = [0.5 * bu * hp, chin - 3.25 * bu, 0], dl = [Math.sin(sp), -Math.cos(sp), 0];
+  const Kn = add(Hip, mul(norm(add(dl, [0, 0, 0.03])), 2.0 * bu)), An = add(Kn, mul(norm(add(dl, [0, 0, -0.02])), 1.85 * bu));
+  const hipR = add3(Hip, 0.42 * bu * rc, pelvis, 4, 'R'), kR = add3(Kn, 0.26 * bu * rc, hipR, 4, 'R'), aR = add3(An, 0.15 * bu * rc, kR, 4, 'R');
+  add3(add(An, [0.03 * bu, -0.3 * bu, 0.85 * bu]), 0.12 * bu, aR, 5, 'R');
+  return mirrorSkeleton(N);
+}
+function zsQuadruped(p) {
+  const S = SPECIES[p.espece] || SPECIES.chien, c = p.corpulence, L = p.corps, legL = S.leg * p.pattes, legR = S.legR * Math.sqrt(c);
+  const N = [];
+  const add3 = (pp, r, parent, part, side) => { N.push({ p: pp, r, parent, part, side }); return N.length - 1; };
+  const Hp = [0, legL * 0.95 + S.hip * 0.25, -0.45 * L], Cp = [0, legL + S.chest * 0.15, 0.45 * L];
+  const pelvis = add3(Hp, S.hip * 0.95 * c, -1, 0);
+  const mid = add3([0, (Hp[1] + Cp[1]) / 2 + 0.01, 0], (S.hip + S.chest) * 0.5 * c, pelvis, 0);
+  const chest = add3(Cp, S.chest * c, mid, 0);
+  const na = S.neckA * DEG, nd = [0, Math.sin(na), Math.cos(na)];
+  const nb = add3(add(Cp, [0, S.chest * 0.55, S.chest * 0.45]), S.chest * 0.55 * Math.sqrt(c), chest, 1);
+  const hr = S.head * p.tete, hc = add(N[nb].p, mul(nd, S.neck * p.cou + hr * 0.4));
+  const head = add3(hc, hr, nb, 1);
+  const fwd = norm([0, -0.3, 1]);
+  add3(add(hc, mul(fwd, hr * 0.7 + S.muz * p.tete)), S.muzR * p.tete, head, 1);
+  const ear = p.oreilles === 'auto' ? S.ears : p.oreilles, es = S.ear * p.tete;
+  if (ear && ear !== 'aucune') {
+    const base = add(hc, [hr * 0.5, hr * 0.62, -hr * 0.15]);
+    const tip = ear === 'tombantes' ? add(base, [hr * 0.35, -es * 1.1, 0]) : ear === 'rondes' ? add(base, [es * 0.4, es * 0.5, 0]) : add(base, [es * 0.25, es, -es * 0.15]);
+    add3(tip, ear === 'rondes' ? es * 0.45 : es * 0.18, head, 7, 'R');
+  }
+  const tl = S.tail * p.queue;
+  if (tl > 0.08) {
+    let pt = add(Hp, [0, S.hip * 0.45, -S.hip * 0.85]), prev = pelvis, ang = 15 * DEG;
+    for (let i = 0; i < 3; i++) { ang += (S.curl * DEG) / 3; const r = S.tailR * (1 - i * 0.25); prev = add3(pt, r, prev, 6); pt = add(pt, [0, Math.sin(ang) * tl / 3, -Math.cos(ang) * tl / 3]); }
+    add3(pt, S.tailR * 0.4, prev, 6);
+  }
+  const fs = [S.chest * 0.55 * c, Cp[1] - S.chest * 0.3, Cp[2] - 0.02], fe = [fs[0] * 0.95, legL * 0.42, Cp[2] - 0.05 * legL], fp = [fs[0] * 0.9, legR * 0.9, Cp[2] + 0.02];
+  const f1 = add3(fs, legR * 1.7, chest, 2, 'R'), f2 = add3(fe, legR * 1.05, f1, 2, 'R'), f3 = add3(fp, legR * 1.0, f2, 5, 'R'); add3(add(fp, [0, -legR * 0.2, legR * 1.6]), legR * 0.75, f3, 5, 'R');
+  const hs = [S.hip * 0.6 * c, Hp[1] - S.hip * 0.2, Hp[2] + 0.04], hk = [hs[0], hs[1] - legL * 0.36, hs[2] + 0.14 * legL], hh = [hs[0] * 0.95, legL * 0.28, hs[2] - 0.1 * legL], hpw = [hs[0] * 0.92, legR * 0.9, hs[2] - 0.01];
+  const h1 = add3(hs, legR * 2.1, pelvis, 4, 'R'), h2 = add3(hk, legR * 1.3, h1, 4, 'R'), h3 = add3(hh, legR * 0.95, h2, 4, 'R'), h4 = add3(hpw, legR * 1.0, h3, 5, 'R');
+  add3(add(hpw, [0, -legR * 0.2, legR * 1.6]), legR * 0.75, h4, 5, 'R');
+  const s = p.taille / (L + S.head + S.muz + 0.3);
+  return mirrorSkeleton(N).map((n) => ({ ...n, p: mul(n.p, s), r: n.r * s }));
+}
+function skinFigure(nodes, p, ctx, name, height) {
+  const lv = ctx.preview ? Math.min(2, p.subdiv) : p.subdiv;
+  const m = Surface.skinZSpheres(nodes, lv, { density: p.densite || 1 });
+  const bb = meshBounds(m), s = height ? height / (bb[4] - bb[1]) : 1;
+  return [part(name, xformMesh(m, [s, 0, 0, 0, s, 0, 0, 0, s], [0, -bb[1] * s, 0]))];
+}
+
 // ------------------------------------------------------------ architecture
 function archH(u, W, H) {
   const au = Math.min(Math.abs(u), W / 2);
@@ -527,10 +708,12 @@ function vault(p, ctx) {
 
 // ------------------------------------------------------------ catalogue
 const CATALOG = [
-  { id: 'chevaliere', cat: 'bijoux', name: 'Chevalière', unit: 'mm', desc: 'Bague à plateau, taille réelle, monogramme gravé ou en relief.', build: signet,
-    params: [...P_RING, ...P_PLATE, { key: 'plateauH', label: 'Hauteur plateau', type: 'range', min: 2.5, max: 8, step: 0.1, def: 4, unit: 'mm' },
+  { id: 'chevaliere', cat: 'bijoux', name: 'Chevalière', unit: 'mm', desc: 'Bague à plateau, taille réelle, monogramme gravé ou en relief. Surfacique (quads) ou volumique.', build: (p, ctx) => (p.mode === 'volume' ? signet(p, ctx) : signetSurface(p, ctx)),
+    params: [{ key: 'mode', label: 'Modélisation', type: 'select', def: 'surface', options: [['surface', 'Surfacique (quads subdivisés)'], ['volume', 'Volumique (voxels)']] }, ...P_RING, ...P_PLATE, { key: 'plateauH', label: 'Hauteur plateau', type: 'range', min: 2.5, max: 8, step: 0.1, def: 4, unit: 'mm' },
       { key: 'bombe', label: 'Bombé', type: 'range', min: 0, max: 2, step: 0.05, def: 0.3, unit: 'mm' }, { key: 'depouille', label: 'Évasement', type: 'range', min: 0, max: 0.4, step: 0.01, def: 0.15 },
-      { key: 'epaule', label: 'Épaules', type: 'range', min: 0.5, max: 5, step: 0.1, def: 2.2, unit: 'mm' }, ...P_TEXT, P_RES(200)] },
+      { key: 'epaule', label: 'Épaules', type: 'range', min: 0.5, max: 5, step: 0.1, def: 2.2, unit: 'mm' },
+      { key: 'arete', label: 'Netteté des arêtes', type: 'range', min: 0.05, max: 1.2, step: 0.05, def: 0.25, unit: 'mm', show: (v) => v.mode !== 'volume' },
+      ...P_TEXT, { key: 'subdiv', label: 'Subdivisions', type: 'range', min: 1, max: 5, step: 1, def: 3, show: (v) => v.mode !== 'volume' }, { ...P_RES(200), show: (v) => v.mode === 'volume' }] },
   { id: 'chevaliere-clapet', cat: 'bijoux', name: 'Chevalière à clapet', unit: 'mm', desc: 'Plateau creux à couvercle articulé : anneau, clapet et goupille séparés.', build: signetLocket,
     params: [...P_RING, ...P_PLATE.map((q) => (q.key === 'plateauW' ? { ...q, def: 13 } : q.key === 'plateauL' ? { ...q, def: 15 } : q)),
       { key: 'plateauH', label: 'Hauteur plateau', type: 'range', min: 4, max: 10, step: 0.1, def: 6, unit: 'mm' }, { key: 'couvercle', label: 'Épaisseur clapet', type: 'range', min: 1, max: 2.5, step: 0.05, def: 1.4, unit: 'mm' },
@@ -564,18 +747,25 @@ const CATALOG = [
       { key: 'largeurJonc', label: 'Largeur du jonc', type: 'range', min: 4, max: 30, step: 0.5, def: 10, unit: 'mm' }, { key: 'epaisseur', label: 'Épaisseur', type: 'range', min: 1.5, max: 4.5, step: 0.1, def: 2.5, unit: 'mm' },
       { key: 'bombe', label: 'Bombé', type: 'range', min: 0, max: 1, step: 0.05, def: 0.5 }, { key: 'jeu', label: 'Jeu de charnière', type: 'range', min: 0.05, max: 0.4, step: 0.01, def: 0.15, unit: 'mm' },
       { key: 'fermoir', label: 'Fermoir à languette', type: 'check', def: true }, { key: 'ouverture', label: 'Ouverture', type: 'range', min: 0, max: 110, step: 1, def: 25, unit: '°', live: true }, P_RES(260, 120, 400)] },
-  { id: 'humanoide', cat: 'figures', name: 'Humanoïde', unit: 'cm', desc: 'Mannequin proportionné à sculpter : canon en têtes, corpulence, silhouette, pose A.', build: humanoid,
-    params: [{ key: 'taille', label: 'Taille', type: 'range', min: 5, max: 200, step: 1, def: 30, unit: 'cm' }, { key: 'tetes', label: 'Hauteur en têtes', type: 'range', min: 2.5, max: 8.5, step: 0.25, def: 7.5 },
+  { id: 'humanoide', cat: 'figures', name: 'Humanoïde', unit: 'cm', desc: 'Mannequin proportionné : squelette de ZSpheres éditable et peau en quads, ou volume.', zs: true,
+    build: (p, ctx) => (p.mode === 'volume' ? humanoid(p, ctx) : skinFigure(zsHumanoid(p), p, ctx, 'Humanoïde', p.taille)),
+    params: [{ key: 'mode', label: 'Modélisation', type: 'select', def: 'zspheres', options: [['zspheres', 'ZSpheres (peau en quads)'], ['volume', 'Volumique (voxels)']] }, { key: 'taille', label: 'Taille', type: 'range', min: 5, max: 200, step: 1, def: 30, unit: 'cm' }, { key: 'tetes', label: 'Hauteur en têtes', type: 'range', min: 2.5, max: 8.5, step: 0.25, def: 7.5 },
       { key: 'corpulence', label: 'Corpulence', type: 'range', min: 0.6, max: 1.6, step: 0.05, def: 1 }, { key: 'silhouette', label: 'Hanches ↔ épaules', type: 'range', min: -1, max: 1, step: 0.05, def: 0 },
       { key: 'bras', label: 'Ouverture des bras', type: 'range', min: 0, max: 95, step: 1, def: 35, unit: '°' }, { key: 'jambes', label: 'Écart des jambes', type: 'range', min: 0, max: 30, step: 1, def: 6, unit: '°' },
-      { key: 'lissage', label: 'Fondu des jonctions', type: 'range', min: 0.2, max: 2.5, step: 0.05, def: 1 }, { key: 'visage', label: 'Ébauche du visage', type: 'check', def: true }, P_RES(200)] },
-  { id: 'animal', cat: 'figures', name: 'Animal', unit: 'cm', desc: 'Chien, chat, cheval, ours, lapin, oiseau ou poisson, proportions réglables.', build: animal,
-    params: [{ key: 'espece', label: 'Espèce', type: 'select', def: 'chien', options: [['chien', 'Chien'], ['chat', 'Chat'], ['cheval', 'Cheval'], ['ours', 'Ours'], ['lapin', 'Lapin'], ['oiseau', 'Oiseau'], ['poisson', 'Poisson']] },
+      { key: 'lissage', label: 'Fondu des jonctions', type: 'range', min: 0.2, max: 2.5, step: 0.05, def: 1, show: (v) => v.mode === 'volume' }, { key: 'visage', label: 'Ébauche du visage', type: 'check', def: true, show: (v) => v.mode === 'volume' },
+      { key: 'subdiv', label: 'Subdivisions', type: 'range', min: 1, max: 4, step: 1, def: 3, show: (v) => v.mode !== 'volume' }, { key: 'densite', label: 'Densité des liens', type: 'range', min: 0.5, max: 2.5, step: 0.1, def: 1, show: (v) => v.mode !== 'volume' },
+      { ...P_RES(200), show: (v) => v.mode === 'volume' }] },
+  { id: 'animal', cat: 'figures', name: 'Animal', unit: 'cm', desc: 'Chien, chat, cheval, ours, lapin, oiseau ou poisson. Quadrupèdes en ZSpheres éditables ou en volume.', zs: (v) => !['oiseau', 'poisson'].includes(v.espece) && v.mode !== 'volume',
+    build: (p, ctx) => (p.mode === 'volume' || ['oiseau', 'poisson'].includes(p.espece) ? animal(p, ctx) : skinFigure(zsQuadruped(p), p, ctx, { chien: 'Chien', chat: 'Chat', cheval: 'Cheval', ours: 'Ours', lapin: 'Lapin' }[p.espece] || 'Animal')),
+    params: [{ key: 'mode', label: 'Modélisation', type: 'select', def: 'zspheres', options: [['zspheres', 'ZSpheres (peau en quads)'], ['volume', 'Volumique (voxels)']], show: (v) => !['oiseau', 'poisson'].includes(v.espece) }, { key: 'espece', label: 'Espèce', type: 'select', def: 'chien', options: [['chien', 'Chien'], ['chat', 'Chat'], ['cheval', 'Cheval'], ['ours', 'Ours'], ['lapin', 'Lapin'], ['oiseau', 'Oiseau'], ['poisson', 'Poisson']] },
       { key: 'taille', label: 'Taille', type: 'range', min: 5, max: 200, step: 1, def: 30, unit: 'cm' }, { key: 'corps', label: 'Longueur du corps', type: 'range', min: 0.6, max: 1.6, step: 0.05, def: 1 },
       { key: 'pattes', label: 'Pattes', type: 'range', min: 0.5, max: 1.6, step: 0.05, def: 1, show: (v) => v.espece !== 'poisson' }, { key: 'cou', label: 'Cou', type: 'range', min: 0.3, max: 2, step: 0.05, def: 1, show: (v) => !['oiseau', 'poisson'].includes(v.espece) },
       { key: 'tete', label: 'Tête', type: 'range', min: 0.6, max: 1.6, step: 0.05, def: 1 }, { key: 'queue', label: 'Queue', type: 'range', min: 0, max: 2, step: 0.05, def: 1 },
       { key: 'corpulence', label: 'Corpulence', type: 'range', min: 0.6, max: 1.6, step: 0.05, def: 1 },
-      { key: 'oreilles', label: 'Oreilles', type: 'select', def: 'auto', options: [['auto', 'Selon l’espèce'], ['pointues', 'Pointues'], ['rondes', 'Rondes'], ['tombantes', 'Tombantes'], ['longues', 'Longues'], ['aucune', 'Aucune']], show: (v) => !['oiseau', 'poisson'].includes(v.espece) }, P_RES(180)] },
+      { key: 'oreilles', label: 'Oreilles', type: 'select', def: 'auto', options: [['auto', 'Selon l’espèce'], ['pointues', 'Pointues'], ['rondes', 'Rondes'], ['tombantes', 'Tombantes'], ['longues', 'Longues'], ['aucune', 'Aucune']], show: (v) => !['oiseau', 'poisson'].includes(v.espece) },
+      { key: 'subdiv', label: 'Subdivisions', type: 'range', min: 1, max: 4, step: 1, def: 3, show: (v) => v.mode !== 'volume' && !['oiseau', 'poisson'].includes(v.espece) },
+      { key: 'densite', label: 'Densité des liens', type: 'range', min: 0.5, max: 2.5, step: 0.1, def: 1, show: (v) => v.mode !== 'volume' && !['oiseau', 'poisson'].includes(v.espece) },
+      { ...P_RES(180), show: (v) => v.mode === 'volume' || ['oiseau', 'poisson'].includes(v.espece) }] },
   { id: 'maison', cat: 'batiments', name: 'Bâtiment simple', unit: 'm', desc: 'Maison ou immeuble : étages, fenêtres avec appuis, porte, corniches, toit.', build: house,
     params: [{ key: 'largeur', label: 'Largeur', type: 'range', min: 4, max: 24, step: 0.5, def: 10, unit: 'm' }, { key: 'profondeur', label: 'Profondeur', type: 'range', min: 4, max: 16, step: 0.5, def: 8, unit: 'm' },
       { key: 'etages', label: 'Niveaux', type: 'range', min: 1, max: 6, step: 1, def: 2 }, { key: 'hauteurEtage', label: 'Hauteur d’étage', type: 'range', min: 2.5, max: 4.5, step: 0.1, def: 3, unit: 'm' },
@@ -606,7 +796,13 @@ function build(id, values, ctx = {}) {
   return s.build(v, ctx).filter((pt) => pt.mesh && pt.mesh.nv > 0 && pt.mesh.idx.length > 0);
 }
 
-const Samples = { CATALOG, CATEGORIES, defaults, build, archInterior, archH };
+function skeleton(id, values) {
+  const v = Object.assign(defaults(id), values || {});
+  if (id === 'humanoide') return zsHumanoid(v);
+  if (id === 'animal' && !['oiseau', 'poisson'].includes(v.espece)) return zsQuadruped(v);
+  return null;
+}
+const Samples = { CATALOG, CATEGORIES, ZS_PARTS, defaults, build, skeleton, archInterior, archH };
 root.Samples = Samples;
 if (typeof module !== 'undefined' && module.exports) module.exports = Samples;
 })(typeof window !== 'undefined' ? window : globalThis);

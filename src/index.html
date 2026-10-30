@@ -140,6 +140,8 @@ body:not([data-space="sculpt"]) .only-sculpt { display: none !important; }
 body:not([data-space="curves"]) .only-curves { display: none !important; }
 body[data-space="sculpt"] .draw-place, body[data-space="lib"] .draw-place { display: none !important; }
 body:not([data-space="lib"]) .only-lib { display: none !important; }
+body:not([data-space="zs"]) .only-zs { display: none !important; }
+body[data-space="zs"] .draw-place { display: none !important; }
 .libitem { display: grid; gap: 2px; text-align: left; padding: 8px 10px; border-radius: var(--r); background: var(--panel-2); border: 1px solid transparent; }
 .libitem b { font-weight: 600; font-size: 13px; }
 .libitem span { font-size: 11.5px; color: var(--muted); line-height: 1.3; }
@@ -216,6 +218,7 @@ body:not(.touchui) .quick { display: none; }
       <button class="btn" id="spaceGP" title="Dessiner des traits dans l'espace (P)">Dessin 3D</button>
       <button class="btn" id="spaceCurves" title="Formes et courbes de Bézier vers maillage (C)">Courbes</button>
       <button class="btn" id="spaceLib" title="Modèles paramétriques : bijoux, figures, bâtiments (M)">Modèles</button>
+      <button class="btn" id="spaceZS" title="Squelette de sphères et peau adaptative en quads (Z)">ZSpheres</button>
     </div>
     <div class="sep"></div>
     <div class="seg only-sculpt" role="group" aria-label="Mode d'action">
@@ -279,6 +282,9 @@ body:not(.touchui) .quick { display: none; }
     </div>
     <div class="only-lib" style="display:grid;gap:3px">
       <div id="libCats" style="display:grid;gap:3px"></div>
+    </div>
+    <div class="only-zs" style="display:grid;gap:3px">
+      <div id="zsTools" style="display:grid;gap:3px"></div>
     </div>
     <div class="only-gp" style="display:grid;gap:3px">
       <div id="gpTools" style="display:grid;gap:3px"></div>
@@ -345,6 +351,7 @@ body:not(.touchui) .quick { display: none; }
           <button class="btn" id="libReset">Valeurs par défaut</button>
           <button class="btn" id="libFrame" title="F">Cadrer</button>
         </div>
+        <div class="row" id="libZsRow" hidden><button class="btn" id="libToZS" title="Ouvre ce squelette dans l’espace ZSpheres pour le retoucher sphère par sphère">Éditer les ZSpheres</button></div>
         <div class="libstat" id="libStatus" role="status"></div>
       </div>
     </details>
@@ -357,6 +364,36 @@ body:not(.touchui) .quick { display: none; }
           <button class="btn" id="libAdd">Ajouter à la scène</button>
         </div>
         <p class="note">Chaque pièce devient un SubTool sculptable. Unités réelles : bijoux en millimètres, figures en centimètres, bâtiments en mètres — un export OBJ garde ces dimensions.</p>
+      </div>
+    </details>
+
+    <details class="pal only-zs" open id="zsPal">
+      <summary>ZSpheres</summary>
+      <div class="pal-body">
+        <div class="field"><label for="zsTemplate">Départ</label>
+          <select class="btn" id="zsTemplate">
+            <option value="humanoide">Humanoïde</option><option value="chien">Chien</option><option value="chat">Chat</option><option value="cheval">Cheval</option>
+            <option value="ours">Ours</option><option value="lapin">Lapin</option><option value="sphere">Sphère seule</option>
+          </select></div>
+        <div class="row"><button class="btn" id="zsLoad">Charger ce départ</button></div>
+        <label class="check"><input type="checkbox" id="zsSym" checked> Symétrie X</label>
+        <label class="check"><input type="checkbox" id="zsSkin"> Aperçu de la peau (A)</label>
+        <div class="slider"><label for="zsRadius">Rayon</label><input type="range" id="zsRadius" min="0" max="1000" value="500"><output id="zsRadiusOut">—</output></div>
+        <div class="slider"><label for="zsSubdiv">Subdivisions</label><input type="range" id="zsSubdiv" min="1" max="4" value="3"><output id="zsSubdivOut">3</output></div>
+        <div class="slider"><label for="zsDensity">Densité</label><input type="range" id="zsDensity" min="5" max="25" value="10"><output id="zsDensityOut">1,0</output></div>
+        <div class="libstat" id="zsStatus" role="status"></div>
+        <p class="note">Ajouter : glisser depuis une sphère crée une sphère enfant ; cliquer sur un lien en insère une. Déplacer, Échelle et Supprimer agissent sur la sphère touchée (Alt+clic supprime aussi). Glisser dans le vide tourne la vue.</p>
+      </div>
+    </details>
+
+    <details class="pal only-zs" open>
+      <summary>Créer la peau</summary>
+      <div class="pal-body">
+        <div class="row">
+          <button class="btn" id="zsNew">Nouvelle scène</button>
+          <button class="btn" id="zsAdd">Ajouter à la scène</button>
+        </div>
+        <p class="note">La peau est un maillage tout en quads, avec un polygroupe par partie du corps.</p>
       </div>
     </details>
 
@@ -553,6 +590,7 @@ body:not(.touchui) .quick { display: none; }
         <div>P : Dessin 3D · C : Courbes · en Dessin 3D, 1–4 : Dessin, Ligne, Gomme, Curseur</div>
         <div>Courbes : 1–5 Forme, Courbe, Plume, Éditer, Curseur · Suppr efface · Ctrl+Entrée crée le maillage</div>
         <div>M : Modèles paramétriques (bijoux, figures, bâtiments)</div>
+        <div>Z : ZSpheres · 1–4 Ajouter, Déplacer, Échelle, Supprimer · A : aperçu de la peau</div>
       </div>
     </details>
   </aside>

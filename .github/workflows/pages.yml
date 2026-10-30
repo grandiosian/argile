@@ -28,6 +28,7 @@ jobs:
           node test/gp.test.js
           node test/curves.test.js
           node test/samples.test.js
+          node test/surface.test.js
       - name: Construction
         run: node build.js
       - uses: actions/configure-pages@v5

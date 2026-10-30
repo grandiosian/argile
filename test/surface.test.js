@@ -82,3 +82,51 @@ for (const forme of ['ovale', 'rond', 'carre', 'coussin', 'octogone']) {
   const sk = Smp.skeleton('humanoide', {});
   assert(sk.length === 6 + 2 * 9 && sk.filter((n) => n.parent < 0).length === 1, 'squelette humanoïde : ' + sk.length + ' sphères, une racine');
 }
+// ------------------------------------------------------------ boîtes chanfreinées (ZBoxes)
+{
+  const bar = [0, 3, 6].map((y, i) => ({ p: [0, y, 0], r: 1, parent: i - 1, sx: 2, sy: 0.5 }));
+  const c = Su.zsphereCage(bar, { shape: 'box' });
+  assert(Math.abs(Su.volume(c) - 4 * 8 * 1) < 1e-9, 'barre de boîtes : volume exact 4 × 8 × 1 (largeur, longueur, épaisseur)');
+  const b = Su.bevel(c, 0.15), tb = topo(Su.toTriMesh(b));
+  assert(tb.open === 0 && tb.over === 0 && tb.euler === 2, 'chanfrein : maillage fermé de genre 0 (' + b.F.length + ' faces)');
+  assert(Su.volume(b) < 32 && Su.volume(b) > 30, 'chanfrein : volume légèrement réduit (' + Su.volume(b).toFixed(2) + ')');
+  let mx = 0; for (const p of b.V) mx = Math.max(mx, Math.abs(p[0])); assert(Math.abs(mx - 2) < 1e-9, 'chanfrein : les faces restent sur leurs plans');
+  const elbow = Su.zsphereCage([{ p: [0, 0, 0], r: 1, parent: -1 }, { p: [0, 4, 0], r: 1, parent: 0 }, { p: [4, 4, 0], r: 1, parent: 1 }], { shape: 'box' });
+  assert(Math.abs(Su.volume(elbow) - 40) < 1e-6, 'coude en onglet : volume exact (40)');
+  const hum = Smp.skeleton('humanoide', {});
+  for (const profile of ['arrondi', 'plat']) for (const lv of [0, 2]) {
+    const m = Su.skinZSpheres(hum, lv, { shape: 'box', chamfer: 0.2, profile }), t = topo(m);
+    assert(t.open === 0 && t.over === 0 && t.euler === 2, 'humanoïde en boîtes (' + profile + ', niveau ' + lv + ') : peau fermée, ' + m.idx.length / 3 + ' triangles');
+  }
+  const r = Smp.build('humanoide', { mode: 'boites' }, {}), bb = require('../src/sdf.js').meshBounds(r[0].mesh);
+  assert(Math.abs(bb[4] - bb[1] - 30) < 1e-3 && new Set(r[0].mesh.groups).size === 6, 'humanoïde mode boîtes : 30 cm, 6 polygroupes');
+  const fr = Su.zsNodeFrames(hum, true);
+  assert(fr.length === hum.length && fr.every((f) => Math.abs(Su.v.dot(f.d, f.u)) < 1e-9 && Math.abs(Su.v.len(f.v) - 1) < 1e-9), 'repères des nœuds orthonormés');
+}
+// ------------------------------------------------------------ esquisses de la chevalière
+{
+  const sk = Smp.sketches('chevaliere', {}), ri = 56 / (2 * Math.PI);
+  assert(sk && sk.face.length >= 3 && sk.cote.length >= 2 && sk.dessus.length >= 2, 'esquisses : face (' + sk.face.length + ' points), côté (' + sk.cote.length + '), dessus (' + sk.dessus.length + ')');
+  assert(Math.abs(sk.face[0].p[0]) < 1e-9 && Math.abs(sk.face[sk.face.length - 1].p[0]) < 1e-9, 'esquisse de face : extrémités sur l’axe de symétrie');
+  assert(Math.abs(sk.a - 6) < 0.05 && Math.abs(sk.b - 7) < 0.05 && Math.abs(sk.yTop - (ri + 4)) < 0.05, 'esquisses depuis les réglages : plateau 12 × 14 mm à ' + sk.yTop.toFixed(2) + ' mm');
+  assert(Smp.sketches('chevaliere', { mode: 'volume' }) === null && Smp.sketches('collier', {}) === null, 'pas d’esquisses en mode volume ni pour les autres modèles');
+  const rin = (m) => { let r = 1e9; for (let i = 0; i < m.nv * 3; i += 3) if (Math.abs(m.pos[i + 2]) < 0.5) r = Math.min(r, Math.hypot(m.pos[i], m.pos[i + 1])); return r; };
+  const ext = (m, k) => { let a = 0; for (let i = k; i < m.nv * 3; i += 3) a = Math.max(a, Math.abs(m.pos[i])); return a; };
+  const base = Smp.build('chevaliere', { subdiv: 2, gravure: 'aucune' }, {})[0].mesh;
+  // plateau étiré dans l'esquisse de dessus (premier point remonté de 2 mm)
+  const top = JSON.parse(JSON.stringify(sk.dessus)); for (const w of ['p', 'i', 'o']) top[0][w][1] += 2;
+  const m1 = Smp.build('chevaliere', { subdiv: 2, gravure: 'aucune', sketch: { dessus: { pts: top } } }, {})[0].mesh, t1 = topo(m1);
+  assert(t1.open === 0 && t1.over === 0, 'esquisse de dessus modifiée : maillage fermé');
+  assert(ext(m1, 2) - ext(base, 2) > 1.5, 'esquisse de dessus modifiée : plateau allongé (' + (2 * ext(base, 2)).toFixed(1) + ' → ' + (2 * ext(m1, 2)).toFixed(1) + ' mm)');
+  assert(Math.abs(2 * rin(m1) - 2 * rin(base)) < 0.02, 'esquisse de dessus modifiée : taille de doigt inchangée');
+  // esquisse de face éditée à la taille 56, puis taille 64 : le profil suit le doigt
+  const m2 = Smp.build('chevaliere', { subdiv: 2, gravure: 'aucune', taille: 64, sketch: { face: { pts: sk.face, ri } } }, {})[0].mesh, t2 = topo(m2);
+  assert(t2.open === 0 && Math.abs(2 * rin(m2) - 64 / Math.PI) < 0.1, 'esquisse de face + taille 64 : Ø intérieur ' + (2 * rin(m2)).toFixed(2) + ' mm');
+  const sk64 = Smp.sketches('chevaliere', { taille: 64, sketch: { face: { pts: sk.face, ri } } });
+  assert(sk64.custom.face && Math.abs(sk64.yTop - (64 / (2 * Math.PI) + 4)) < 0.05, 'esquisse de face décalée avec la taille (plateau à ' + sk64.yTop.toFixed(2) + ' mm)');
+  // face rehaussée : le plateau monte
+  const face = JSON.parse(JSON.stringify(sk.face)); for (const A of face.slice(0, 3)) for (const w of ['p', 'i', 'o']) A[w][1] += 1.5;
+  const m3 = Smp.build('chevaliere', { subdiv: 2, gravure: 'aucune', sketch: { face: { pts: face, ri } } }, {})[0].mesh;
+  let y3 = -1e9, y0 = -1e9; for (let i = 1; i < m3.nv * 3; i += 3) y3 = Math.max(y3, m3.pos[i]); for (let i = 1; i < base.nv * 3; i += 3) y0 = Math.max(y0, base.pos[i]);
+  assert(Math.abs(y3 - y0 - 1.5) < 0.1, 'esquisse de face rehaussée de 1,5 mm : plateau ' + (y3 - y0).toFixed(2) + ' mm plus haut');
+}

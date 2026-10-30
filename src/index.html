@@ -141,6 +141,8 @@ body:not([data-space="curves"]) .only-curves { display: none !important; }
 body[data-space="sculpt"] .draw-place, body[data-space="lib"] .draw-place { display: none !important; }
 body:not([data-space="lib"]) .only-lib { display: none !important; }
 body:not([data-space="zs"]) .only-zs { display: none !important; }
+body:not([data-zsshape="box"]) .only-zbox { display: none !important; }
+body[data-zsshape="box"] .only-zsph { display: none !important; }
 body[data-space="zs"] .draw-place { display: none !important; }
 .libitem { display: grid; gap: 2px; text-align: left; padding: 8px 10px; border-radius: var(--r); background: var(--panel-2); border: 1px solid transparent; }
 .libitem b { font-weight: 600; font-size: 13px; }
@@ -149,6 +151,16 @@ body[data-space="zs"] .draw-place { display: none !important; }
 .libitem.on b { color: var(--accent); }
 #libForm .field input[type=text] { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; width: 7em; text-align: center; font: 600 14px var(--f-ui); letter-spacing: .08em; }
 .unit-chip { display: inline-block; font: 500 10px var(--f-num); letter-spacing: .06em; color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+.skpanel { position: absolute; top: 12px; right: 12px; z-index: 6; width: min(440px, calc(100% - 96px)); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: min(560px, calc(100% - 64px)); background: rgba(32, 31, 29, .94); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 12px 34px rgba(0,0,0,.45); backdrop-filter: blur(6px); }
+.skhead { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--line); }
+.skhead .btn.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.skstate { font: 11px var(--f-num); color: var(--muted); margin-right: auto; white-space: nowrap; }
+.skstate.mod { color: var(--accent); }
+.skpanel canvas { position: static; width: 100%; height: 100%; min-height: 0; display: block; touch-action: none; cursor: default; }
+.skfoot { display: grid; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+.skfoot .row { display: flex; flex-wrap: wrap; gap: 6px; }
+.skinfo { font: 11px var(--f-num); color: var(--muted); font-variant-numeric: tabular-nums; }
+#libSketch.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 .libstat { font: 11px var(--f-num); color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.3em; }
 .libstat.err { color: var(--sub); }
 .cv { display: grid; grid-template-columns: 26px 22px 1fr auto; align-items: center; gap: 4px; padding: 5px 6px; border-radius: var(--r); background: var(--panel-2); border: 1px solid transparent; cursor: pointer; }
@@ -306,6 +318,28 @@ body:not(.touchui) .quick { display: none; }
       <button class="qb only-sculpt" data-hold="mask" title="Maintenir ou toucher pour verrouiller">Masque</button>
       <button class="qb only-gp" data-hold="erase" title="Maintenir ou toucher pour verrouiller">Gomme</button>
     </div>
+    <section class="skpanel only-lib" id="skPanel" hidden aria-label="Esquisses de construction">
+      <header class="skhead">
+        <div class="seg" role="tablist" id="skTabs">
+          <button class="btn" data-skview="face" role="tab" title="Profil extérieur vu de face (plan XY)">Face</button>
+          <button class="btn" data-skview="cote" role="tab" title="Largeur vue de côté (plan ZY)">Côté</button>
+          <button class="btn" data-skview="dessus" role="tab" title="Contour du plateau vu de dessus (plan XZ)">Dessus</button>
+        </div>
+        <span class="skstate" id="skState"></span>
+        <button class="btn icon" id="skClose" title="Fermer les esquisses (K)" aria-label="Fermer">×</button>
+      </header>
+      <canvas id="skCanvas"></canvas>
+      <footer class="skfoot">
+        <div class="skinfo" id="skInfo"></div>
+        <div class="row">
+          <button class="btn" id="skDel" title="Supprimer le point sélectionné (Suppr)">Supprimer le point</button>
+          <button class="btn" id="skCorner" title="Point lisse ↔ anguleux (double-clic sur le point)">Lisse / anguleux</button>
+          <button class="btn" id="skFit" title="Recadrer l’esquisse">Cadrer</button>
+          <button class="btn" id="skReset" title="Revenir à l’esquisse calculée depuis les réglages">Réinitialiser</button>
+        </div>
+        <p class="note">Glisser les points et les poignées. Double-clic sur la courbe : ajouter un point ; sur un point : lisse ↔ anguleux. La moitié grisée est le reflet symétrique.</p>
+      </footer>
+    </section>
     <div class="status"><div class="hint" id="hint"></div><div class="mode" id="modeLabel"></div></div>
   </main>
 
@@ -351,6 +385,7 @@ body:not(.touchui) .quick { display: none; }
           <button class="btn" id="libReset">Valeurs par défaut</button>
           <button class="btn" id="libFrame" title="F">Cadrer</button>
         </div>
+        <div class="row" id="libSkRow" hidden><button class="btn" id="libSketch" title="Affiche et édite les courbes de construction : profil de face, largeur de côté, contour du plateau (K)">Esquisses de construction</button></div>
         <div class="row" id="libZsRow" hidden><button class="btn" id="libToZS" title="Ouvre ce squelette dans l’espace ZSpheres pour le retoucher sphère par sphère">Éditer les ZSpheres</button></div>
         <div class="libstat" id="libStatus" role="status"></div>
       </div>
@@ -376,13 +411,20 @@ body:not(.touchui) .quick { display: none; }
             <option value="ours">Ours</option><option value="lapin">Lapin</option><option value="sphere">Sphère seule</option>
           </select></div>
         <div class="row"><button class="btn" id="zsLoad">Charger ce départ</button></div>
+        <div class="field"><label for="zsShape">Forme</label>
+          <select class="btn" id="zsShape"><option value="sphere">Sphères (peau arrondie)</option><option value="box">Boîtes chanfreinées</option></select></div>
         <label class="check"><input type="checkbox" id="zsSym" checked> Symétrie X</label>
         <label class="check"><input type="checkbox" id="zsSkin"> Aperçu de la peau (A)</label>
-        <div class="slider"><label for="zsRadius">Rayon</label><input type="range" id="zsRadius" min="0" max="1000" value="500"><output id="zsRadiusOut">—</output></div>
-        <div class="slider"><label for="zsSubdiv">Subdivisions</label><input type="range" id="zsSubdiv" min="1" max="4" value="3"><output id="zsSubdivOut">3</output></div>
-        <div class="slider"><label for="zsDensity">Densité</label><input type="range" id="zsDensity" min="5" max="25" value="10"><output id="zsDensityOut">1,0</output></div>
+        <div class="slider"><label for="zsRadius">Taille</label><input type="range" id="zsRadius" min="0" max="1000" value="500"><output id="zsRadiusOut">—</output></div>
+        <div class="slider only-zbox"><label for="zsSX">Largeur</label><input type="range" id="zsSX" min="20" max="300" value="100"><output id="zsSXOut">—</output></div>
+        <div class="slider only-zbox"><label for="zsSY">Épaisseur</label><input type="range" id="zsSY" min="20" max="300" value="100"><output id="zsSYOut">—</output></div>
+        <div class="slider only-zbox"><label for="zsChamfer">Chanfrein</label><input type="range" id="zsChamfer" min="0" max="40" value="15"><output id="zsChamferOut">15 %</output></div>
+        <div class="field only-zbox"><label for="zsProfile">Profil</label>
+          <select class="btn" id="zsProfile"><option value="arrondi">Arrondi</option><option value="plat">Plat (arêtes vives)</option></select></div>
+        <div class="slider"><label for="zsSubdiv">Subdivisions</label><input type="range" id="zsSubdiv" min="0" max="4" value="3"><output id="zsSubdivOut">3</output></div>
+        <div class="slider only-zsph"><label for="zsDensity">Densité</label><input type="range" id="zsDensity" min="5" max="25" value="10"><output id="zsDensityOut">1,0</output></div>
         <div class="libstat" id="zsStatus" role="status"></div>
-        <p class="note">Ajouter : glisser depuis une sphère crée une sphère enfant ; cliquer sur un lien en insère une. Déplacer, Échelle et Supprimer agissent sur la sphère touchée (Alt+clic supprime aussi). Glisser dans le vide tourne la vue.</p>
+        <p class="note">Ajouter : glisser depuis une sphère (ou une boîte) crée un enfant ; cliquer sur un lien en insère une. Déplacer, Échelle et Supprimer agissent sur le nœud touché (Alt+clic supprime aussi). En mode Boîtes, Largeur et Épaisseur règlent la section du nœud sélectionné. Glisser dans le vide tourne la vue.</p>
       </div>
     </details>
 

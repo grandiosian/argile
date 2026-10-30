@@ -143,14 +143,85 @@ function plateProfile(kind, xn) {
     default: return Math.sqrt(Math.max(0, 1 - u * u));
   }
 }
-function signetCage(p) {
+// ---- esquisses de construction (courbes de Bézier 2D, en mm)
+//  face  : demi-contour extérieur vu de face (plan XY), du haut (x = 0) au bas (x = 0) ; le reste est symétrique
+//  cote  : demi-largeur extérieure vue de côté (plan ZY), coordonnées [z, y], du haut du plateau au bas de l'anneau
+//  dessus: quart du contour du plateau vu de dessus (plan XZ), coordonnées [x, z], de (0, b) à (a, 0)
+// Tant qu'une esquisse n'est pas modifiée, elle est recalculée depuis les réglages.
+function signetBase(p) {
   const ri = p.taille / (2 * PI);
   let a = p.plateauW / 2, b = p.plateauL / 2;
   if (p.forme === 'rond') a = b = Math.min(a, b);
-  const yTop = ri + p.plateauH, dome = p.bombe, dep = p.depouille;
-  const hb = p.bandeW / 2, tb = p.bandeT;
+  const yTop = ri + p.plateauH, hb = p.bandeW / 2, tb = p.bandeT;
   const hinTop = Math.min(b * 0.8, Math.max(hb * 1.6, b * 0.62));
   const phiP = Math.atan(a / yTop), phiS = phiP + clamp(p.epaule / ri, 0.15, 0.95);
+  return { ri, a, b, yTop, hb, tb, hinTop, phiP, phiS, yBot: -(ri + tb) };
+}
+const wPlate = (B, ap) => 1 - smooth01((ap - B.phiP) / (B.phiS - B.phiP));
+const wShoulder = (B, ap) => smooth01(1 - (ap - B.phiP) / (PI - B.phiP) * 1.15);
+function defaultSketches(p) {
+  const B = signetBase(p), fit = (pts, tol, corner) => Curves.fitPath(pts.map((q) => [q[0], q[1], 0]), tol, false, corner);
+  // face : rayon extérieur selon l'angle (plateau plan, épaules, anneau)
+  const face = [];
+  for (let i = 0; i <= 160; i++) {
+    const phi = (i / 160) * PI, c = Math.cos(phi), wP = wPlate(B, phi), wS = wShoulder(B, phi);
+    const tBand = B.tb + (p.plateauH * 0.55 - B.tb) * wS, uBand = B.ri + Math.max(B.tb, tBand);
+    const R = wP * (c > 0.2 ? B.yTop / c : uBand) + (1 - wP) * uBand;
+    face.push([Math.sin(phi) * R, c * R]);
+  }
+  // côté : largeur intérieure héritée de l'ancien modèle, prolongée jusqu'au plateau
+  const side = [[B.b, B.yTop]];
+  for (let i = 0; i <= 80; i++) {
+    const phi = B.phiP + ((PI - B.phiP) * i) / 80, wP = wPlate(B, phi), wS = wShoulder(B, phi);
+    side.push([B.hb + (B.hinTop - B.hb) * Math.max(wP, wS * 0.85), Math.cos(phi) * B.ri]);
+  }
+  side.push([B.hb, B.yBot]);
+  // dessus : contour du plateau selon la forme
+  const top = [];
+  for (let i = 0; i <= 90; i++) { const u = Math.sin((i / 90) * PI / 2); top.push([u * B.a, B.b * plateProfile(p.forme, u)]); }
+  return { face: fit(face, 0.08, 35), cote: fit(side, 0.08, 50), dessus: fit(top, 0.02, 30), base: B };
+}
+// Décale une esquisse enregistrée quand la taille de doigt a changé depuis son édition
+function shiftSketch(pts, f) { return pts.map((A) => { const d = f(A.p); const mv = (q) => [q[0] + d[0], q[1] + d[1], 0]; return { ...A, p: mv(A.p), i: mv(A.i), o: mv(A.o) }; }); }
+function signetSketches(p) {
+  const D = defaultSketches(p), B = D.base, sk = p.sketch || {}, out = { base: B, custom: {} };
+  for (const k of ['face', 'cote', 'dessus']) {
+    const c = sk[k];
+    if (!c || !c.pts || c.pts.length < 2) { out[k] = D[k]; continue; }
+    out.custom[k] = true;
+    const dR = c.ri != null ? B.ri - c.ri : 0;
+    if (Math.abs(dR) < 1e-9 || k === 'dessus') out[k] = c.pts;
+    else if (k === 'face') out[k] = shiftSketch(c.pts, (q) => { const l = Math.hypot(q[0], q[1]) || 1; return [(q[0] / l) * dR, (q[1] / l) * dR]; });
+    else out[k] = shiftSketch(c.pts, (q) => [0, q[1] >= 0 ? dR : -dR]);
+  }
+  return out;
+}
+const sketchPoly = (pts) => Curves.polyline({ pts, closed: false }, 24);
+// Intersections d'une demi-droite / d'une droite avec une polyligne 2D
+function rayHits(poly, o, d) {
+  const hits = [];
+  for (let i = 0; i + 1 < poly.length; i++) {
+    const P = poly[i], Q = poly[i + 1], ex = Q[0] - P[0], ey = Q[1] - P[1], den = d[0] * ey - d[1] * ex;
+    if (Math.abs(den) < 1e-14) continue;
+    const wx = P[0] - o[0], wy = P[1] - o[1], t = (wx * ey - wy * ex) / den, s = (wx * d[1] - wy * d[0]) / den;
+    if (s >= -1e-9 && s <= 1 + 1e-9) hits.push(t);
+  }
+  return hits;
+}
+function sketchEval(sk) {
+  const B = sk.base, F = sketchPoly(sk.face), C = sketchPoly(sk.cote), T = sketchPoly(sk.dessus).map((q) => [Math.abs(q[0]), Math.abs(q[1])]);
+  const RF = (phi) => { const h = rayHits(F, [0, 0], [Math.sin(phi), Math.cos(phi)]).filter((t) => t > 0); return h.length ? Math.max(...h) : B.ri + B.tb; };
+  let a = 0; for (const q of T) a = Math.max(a, q[0]);
+  const hT = (x) => { x = Math.abs(x); if (x >= a) return 0; const h = rayHits(T, [x, 0], [0, 1]); return h.length ? Math.max(0, ...h) : 0; };
+  let yMax = -Infinity, yMin = Infinity; for (const q of C) { yMax = Math.max(yMax, q[1]); yMin = Math.min(yMin, q[1]); }
+  const atY = (y) => { const h = rayHits(C, [0, y], [1, 0]); return h.length ? Math.max(...h.map(Math.abs)) : null; };
+  const W = (y) => { const yy = clamp(y, yMin + 1e-6, yMax - 1e-6), v = atY(yy); return v != null ? v : Math.abs(C[y > (yMax + yMin) / 2 ? 0 : C.length - 1][0]); };
+  return { RF, hT, W, a: Math.max(a, 0.5), b: Math.max(hT(0), 0.5), yTop: RF(0) };
+}
+function signetCage(p) {
+  const sk = signetSketches(p), B = sk.base, E = sketchEval(sk), ri = B.ri;
+  const a = E.a, b = E.b, yTop = E.yTop, dome = p.bombe, dep = p.depouille, tb = B.tb;
+  const phiP = Math.atan(a / yTop), phiS = phiP + clamp(p.epaule / ri, 0.15, 0.95), BB = { ...B, phiP, phiS };
   // angles des sections (0 = haut), denses sur le plateau et ses bords
   const ang = [];
   const nP = 12; for (let i = 0; i <= nP; i++) ang.push(-phiP + (2 * phiP * i) / nP);
@@ -160,7 +231,7 @@ function signetCage(p) {
   const A = ang.map((x) => ((x % (2 * PI)) + 2 * PI) % (2 * PI)).sort((x, y) => x - y);
   const uniq = A.filter((x, i) => i === 0 || x - A[i - 1] > 1e-4);
   const S = uniq.length;
-  const domeY = (x, z) => yTop + dome * Math.max(0, 1 - (x / a) ** 2 - (z / b) ** 2);
+  const domeH = (x, z) => dome * Math.max(0, 1 - (x / a) ** 2 - (z / b) ** 2);
   const eIn = Math.min(0.35, tb * 0.25), eTop = p.arete;
   const V = [], F = [], G = [];
   let loopLen = 0;
@@ -171,22 +242,18 @@ function signetCage(p) {
   const sections = uniq.map((phi, si) => {
     const sp = phi > PI ? phi - 2 * PI : phi;               // angle signé depuis le haut
     const ap = Math.abs(sp), s = Math.sin(sp), c = Math.cos(sp);
-    const wP = 1 - smooth01((ap - phiP) / (phiS - phiP));    // 1 sur le plateau → 0 sous les épaules
-    const wS = smooth01(1 - (ap - phiP) / (PI - phiP) * 1.15); // élargissement progressif vers le haut
+    const wP = wPlate(BB, ap);                               // 1 sur le plateau → 0 sous les épaules
     const Rin = Rc[si];
-    const hin = hb + (hinTop - hb) * Math.max(wP, wS * 0.85);
-    const tBand = tb + (p.plateauH * 0.55 - tb) * wS;
-    const uBand = Rin + Math.max(tb, tBand);
+    const hin = Math.max(0.3, E.W(c * ri));
     const xPl = yTop * Math.tan(Math.min(ap, phiP + 0.2)) * Math.sign(sp);
-    const houtP = Math.max(b * plateProfile(p.forme, xPl / a), hin * 0.65, 0.4);
-    const hout = wP * houtP + (1 - wP) * Math.max(hin * 0.9, 0.3);
-    const uOut = (z) => {
-      const uPl = c > 0.2 ? domeY(xPl, z) / c : uBand;
-      return wP * uPl + (1 - wP) * uBand;
-    };
+    // l'anneau est arrondi par la subdivision : on compense comme pour le rayon intérieur (hors plateau plan)
+    const RF = Math.max(E.RF(ap) + (1 - wP) * (Rin - ri), Rin + 0.4);
+    const uOut = (z) => RF + (c > 0.2 ? (wP * domeH(xPl, z)) / c : 0);
     const uTop = uOut(0);
+    const houtP = Math.max(E.hT(xPl), hin * 0.65, 0.4);
+    const hout = wP * houtP + (1 - wP) * Math.max(0.9 * E.W(c * uTop), 0.3);
     const wallH = Math.min(p.plateauH * 0.45, (uTop - Rin) * 0.45);
-    const uW = wP * (uTop - wallH) + (1 - wP) * (Rin + uBand) / 2;
+    const uW = wP * (uTop - wallH) + (1 - wP) * (Rin + uTop) / 2;
     const hw = wP * Math.max(hin, hout * (1 - dep)) + (1 - wP) * Math.max(hin, hout);
     // contour de la section dans le plan (u radial, z) : intérieur, flanc droit, dessus, flanc gauche
     const pts = [], kind = [];
@@ -219,7 +286,7 @@ function signetCage(p) {
       G.push(sections[i].kind[k] === sections[i].kind[k2] ? sections[i].kind[k] : 3);
     }
   }
-  return { cage: Surface.orient({ V, F, G }), a, b, yTop, ri };
+  return { cage: Surface.orient({ V, F, G }), a, b, yTop, ri, sketches: sk };
 }
 function signetSurface(p, ctx) {
   const { cage, a, b, yTop } = signetCage(p);
@@ -586,7 +653,7 @@ function zsQuadruped(p) {
 }
 function skinFigure(nodes, p, ctx, name, height) {
   const lv = ctx.preview ? Math.min(2, p.subdiv) : p.subdiv;
-  const m = Surface.skinZSpheres(nodes, lv, { density: p.densite || 1 });
+  const m = Surface.skinZSpheres(nodes, lv, { density: p.densite || 1, shape: p.mode === 'boites' ? 'box' : 'sphere', chamfer: p.chanfrein, profile: p.profilChanfrein });
   const bb = meshBounds(m), s = height ? height / (bb[4] - bb[1]) : 1;
   return [part(name, xformMesh(m, [s, 0, 0, 0, s, 0, 0, 0, s], [0, -bb[1] * s, 0]))];
 }
@@ -707,6 +774,8 @@ function vault(p, ctx) {
 }
 
 // ------------------------------------------------------------ catalogue
+const P_BOX = (cond) => [{ key: 'chanfrein', label: 'Chanfrein', type: 'range', min: 0, max: 0.4, step: 0.01, def: 0.15, fmt: (v) => Math.round(v * 100) + ' %', show: (v) => v.mode === 'boites' && cond(v) },
+  { key: 'profilChanfrein', label: 'Profil du chanfrein', type: 'select', def: 'arrondi', options: [['arrondi', 'Arrondi'], ['plat', 'Plat (arêtes vives)']], show: (v) => v.mode === 'boites' && cond(v) }];
 const CATALOG = [
   { id: 'chevaliere', cat: 'bijoux', name: 'Chevalière', unit: 'mm', desc: 'Bague à plateau, taille réelle, monogramme gravé ou en relief. Surfacique (quads) ou volumique.', build: (p, ctx) => (p.mode === 'volume' ? signet(p, ctx) : signetSurface(p, ctx)),
     params: [{ key: 'mode', label: 'Modélisation', type: 'select', def: 'surface', options: [['surface', 'Surfacique (quads subdivisés)'], ['volume', 'Volumique (voxels)']] }, ...P_RING, ...P_PLATE, { key: 'plateauH', label: 'Hauteur plateau', type: 'range', min: 2.5, max: 8, step: 0.1, def: 4, unit: 'mm' },
@@ -749,22 +818,23 @@ const CATALOG = [
       { key: 'fermoir', label: 'Fermoir à languette', type: 'check', def: true }, { key: 'ouverture', label: 'Ouverture', type: 'range', min: 0, max: 110, step: 1, def: 25, unit: '°', live: true }, P_RES(260, 120, 400)] },
   { id: 'humanoide', cat: 'figures', name: 'Humanoïde', unit: 'cm', desc: 'Mannequin proportionné : squelette de ZSpheres éditable et peau en quads, ou volume.', zs: true,
     build: (p, ctx) => (p.mode === 'volume' ? humanoid(p, ctx) : skinFigure(zsHumanoid(p), p, ctx, 'Humanoïde', p.taille)),
-    params: [{ key: 'mode', label: 'Modélisation', type: 'select', def: 'zspheres', options: [['zspheres', 'ZSpheres (peau en quads)'], ['volume', 'Volumique (voxels)']] }, { key: 'taille', label: 'Taille', type: 'range', min: 5, max: 200, step: 1, def: 30, unit: 'cm' }, { key: 'tetes', label: 'Hauteur en têtes', type: 'range', min: 2.5, max: 8.5, step: 0.25, def: 7.5 },
+    params: [{ key: 'mode', label: 'Modélisation', type: 'select', def: 'zspheres', options: [['zspheres', 'ZSpheres (peau en quads)'], ['boites', 'Boîtes chanfreinées (quads)'], ['volume', 'Volumique (voxels)']] }, { key: 'taille', label: 'Taille', type: 'range', min: 5, max: 200, step: 1, def: 30, unit: 'cm' }, { key: 'tetes', label: 'Hauteur en têtes', type: 'range', min: 2.5, max: 8.5, step: 0.25, def: 7.5 },
       { key: 'corpulence', label: 'Corpulence', type: 'range', min: 0.6, max: 1.6, step: 0.05, def: 1 }, { key: 'silhouette', label: 'Hanches ↔ épaules', type: 'range', min: -1, max: 1, step: 0.05, def: 0 },
       { key: 'bras', label: 'Ouverture des bras', type: 'range', min: 0, max: 95, step: 1, def: 35, unit: '°' }, { key: 'jambes', label: 'Écart des jambes', type: 'range', min: 0, max: 30, step: 1, def: 6, unit: '°' },
       { key: 'lissage', label: 'Fondu des jonctions', type: 'range', min: 0.2, max: 2.5, step: 0.05, def: 1, show: (v) => v.mode === 'volume' }, { key: 'visage', label: 'Ébauche du visage', type: 'check', def: true, show: (v) => v.mode === 'volume' },
-      { key: 'subdiv', label: 'Subdivisions', type: 'range', min: 1, max: 4, step: 1, def: 3, show: (v) => v.mode !== 'volume' }, { key: 'densite', label: 'Densité des liens', type: 'range', min: 0.5, max: 2.5, step: 0.1, def: 1, show: (v) => v.mode !== 'volume' },
-      { ...P_RES(200), show: (v) => v.mode === 'volume' }] },
+      { key: 'subdiv', label: 'Subdivisions', type: 'range', min: 1, max: 4, step: 1, def: 3, show: (v) => v.mode !== 'volume' }, { key: 'densite', label: 'Densité des liens', type: 'range', min: 0.5, max: 2.5, step: 0.1, def: 1, show: (v) => v.mode === 'zspheres' },
+      ...P_BOX(() => true), { ...P_RES(200), show: (v) => v.mode === 'volume' }] },
   { id: 'animal', cat: 'figures', name: 'Animal', unit: 'cm', desc: 'Chien, chat, cheval, ours, lapin, oiseau ou poisson. Quadrupèdes en ZSpheres éditables ou en volume.', zs: (v) => !['oiseau', 'poisson'].includes(v.espece) && v.mode !== 'volume',
     build: (p, ctx) => (p.mode === 'volume' || ['oiseau', 'poisson'].includes(p.espece) ? animal(p, ctx) : skinFigure(zsQuadruped(p), p, ctx, { chien: 'Chien', chat: 'Chat', cheval: 'Cheval', ours: 'Ours', lapin: 'Lapin' }[p.espece] || 'Animal')),
-    params: [{ key: 'mode', label: 'Modélisation', type: 'select', def: 'zspheres', options: [['zspheres', 'ZSpheres (peau en quads)'], ['volume', 'Volumique (voxels)']], show: (v) => !['oiseau', 'poisson'].includes(v.espece) }, { key: 'espece', label: 'Espèce', type: 'select', def: 'chien', options: [['chien', 'Chien'], ['chat', 'Chat'], ['cheval', 'Cheval'], ['ours', 'Ours'], ['lapin', 'Lapin'], ['oiseau', 'Oiseau'], ['poisson', 'Poisson']] },
+    params: [{ key: 'mode', label: 'Modélisation', type: 'select', def: 'zspheres', options: [['zspheres', 'ZSpheres (peau en quads)'], ['boites', 'Boîtes chanfreinées (quads)'], ['volume', 'Volumique (voxels)']], show: (v) => !['oiseau', 'poisson'].includes(v.espece) }, { key: 'espece', label: 'Espèce', type: 'select', def: 'chien', options: [['chien', 'Chien'], ['chat', 'Chat'], ['cheval', 'Cheval'], ['ours', 'Ours'], ['lapin', 'Lapin'], ['oiseau', 'Oiseau'], ['poisson', 'Poisson']] },
       { key: 'taille', label: 'Taille', type: 'range', min: 5, max: 200, step: 1, def: 30, unit: 'cm' }, { key: 'corps', label: 'Longueur du corps', type: 'range', min: 0.6, max: 1.6, step: 0.05, def: 1 },
       { key: 'pattes', label: 'Pattes', type: 'range', min: 0.5, max: 1.6, step: 0.05, def: 1, show: (v) => v.espece !== 'poisson' }, { key: 'cou', label: 'Cou', type: 'range', min: 0.3, max: 2, step: 0.05, def: 1, show: (v) => !['oiseau', 'poisson'].includes(v.espece) },
       { key: 'tete', label: 'Tête', type: 'range', min: 0.6, max: 1.6, step: 0.05, def: 1 }, { key: 'queue', label: 'Queue', type: 'range', min: 0, max: 2, step: 0.05, def: 1 },
       { key: 'corpulence', label: 'Corpulence', type: 'range', min: 0.6, max: 1.6, step: 0.05, def: 1 },
       { key: 'oreilles', label: 'Oreilles', type: 'select', def: 'auto', options: [['auto', 'Selon l’espèce'], ['pointues', 'Pointues'], ['rondes', 'Rondes'], ['tombantes', 'Tombantes'], ['longues', 'Longues'], ['aucune', 'Aucune']], show: (v) => !['oiseau', 'poisson'].includes(v.espece) },
       { key: 'subdiv', label: 'Subdivisions', type: 'range', min: 1, max: 4, step: 1, def: 3, show: (v) => v.mode !== 'volume' && !['oiseau', 'poisson'].includes(v.espece) },
-      { key: 'densite', label: 'Densité des liens', type: 'range', min: 0.5, max: 2.5, step: 0.1, def: 1, show: (v) => v.mode !== 'volume' && !['oiseau', 'poisson'].includes(v.espece) },
+      { key: 'densite', label: 'Densité des liens', type: 'range', min: 0.5, max: 2.5, step: 0.1, def: 1, show: (v) => v.mode === 'zspheres' && !['oiseau', 'poisson'].includes(v.espece) },
+      ...P_BOX((v) => !['oiseau', 'poisson'].includes(v.espece)),
       { ...P_RES(180), show: (v) => v.mode === 'volume' || ['oiseau', 'poisson'].includes(v.espece) }] },
   { id: 'maison', cat: 'batiments', name: 'Bâtiment simple', unit: 'm', desc: 'Maison ou immeuble : étages, fenêtres avec appuis, porte, corniches, toit.', build: house,
     params: [{ key: 'largeur', label: 'Largeur', type: 'range', min: 4, max: 24, step: 0.5, def: 10, unit: 'm' }, { key: 'profondeur', label: 'Profondeur', type: 'range', min: 4, max: 16, step: 0.5, def: 8, unit: 'm' },
@@ -802,7 +872,14 @@ function skeleton(id, values) {
   if (id === 'animal' && !['oiseau', 'poisson'].includes(v.espece)) return zsQuadruped(v);
   return null;
 }
-const Samples = { CATALOG, CATEGORIES, ZS_PARTS, defaults, build, skeleton, archInterior, archH };
+// Esquisses éditables d'un modèle (null si le modèle n'en a pas dans ce mode)
+function sketches(id, values) {
+  const v = Object.assign(defaults(id), values || {});
+  if (id !== 'chevaliere' || v.mode === 'volume') return null;
+  const sk = signetSketches(v), E = sketchEval(sk);
+  return { face: sk.face, cote: sk.cote, dessus: sk.dessus, custom: sk.custom, ri: sk.base.ri, yBot: sk.base.yBot, a: E.a, b: E.b, yTop: E.yTop };
+}
+const Samples = { CATALOG, CATEGORIES, ZS_PARTS, defaults, build, skeleton, sketches, archInterior, archH };
 root.Samples = Samples;
 if (typeof module !== 'undefined' && module.exports) module.exports = Samples;
 })(typeof window !== 'undefined' ? window : globalThis);

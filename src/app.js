@@ -111,6 +111,7 @@ function applyEntry(e, fwd) {
     }
     case 'gp': GP.restore(S.gp, fwd ? e.after : e.before); refreshGPLayers(); break;
     case 'zs': zsRestore(fwd ? e.after : e.before); break;
+    case 'libsk': skRestore(e.id, fwd ? e.after : e.before); break;
     case 'curves': { const sn = fwd ? e.after : e.before; S.cvPen = null; S.curves = Curves.clone(sn.curves); S.cvSel = { ...sn.sel }; Curves.syncIds(S.curves); dropGhost(); cvChanged(); break; }
     case 'multi': (fwd ? e.list : e.list.slice().reverse()).forEach((x) => applyEntry(x, fwd)); break;
     case 'xform': {
@@ -202,7 +203,8 @@ function drawOverlay() {
   }
   if (S.space === 'gp') { drawGPOverlay(); return; }
   if (S.space === 'curves') { drawCurvesOverlay(); return; }
-  if (S.space === 'lib' || S.space === 'zs') return;
+  if (S.space === 'lib') { drawSketches3D(); return; }
+  if (S.space === 'zs') return;
   if (!pointer.inside || S.mode !== 'draw') return;
   const type = brushTypeNow();
   const sub = (S.brush.zadd ? 1 : -1) * (pointer.alt ? -1 : 1) < 0;
@@ -692,7 +694,13 @@ window.addEventListener('keydown', (e) => {
     if ((k === 'delete' || k === 'backspace') && ZS.sel >= 0 && ZS.nodes[ZS.sel].parent >= 0) return go(() => { const before = zsSnap(), m = ZS.sym ? zsMirror(ZS.sel) : -1; zsRemove(m >= 0 && m !== ZS.sel ? [ZS.sel, m] : [ZS.sel]); pushUndo({ type: 'zs', label: 'supprimer une sphère', before, after: zsSnap() }); zsChanged(); });
     return;
   }
-  if (S.space === 'lib') { if (k === 'f') return go(frameLib); return; }
+  if (S.space === 'lib') {
+    if (k === 'f') return go(frameLib);
+    if (k === 'k') return go(() => setSkOpen(!SK.open));
+    if (SK.open && (k === 'delete' || k === 'backspace')) return go(skDeletePoint);
+    if (SK.open && k === 'escape') return go(() => setSkOpen(false));
+    return;
+  }
   if (S.space === 'curves') {
     const t = { 1: 'shape', 2: 'path', 3: 'pen', 4: 'edit', 5: 'cursor' }[e.key];
     if (t) return go(() => setCvTool(t));
@@ -1572,6 +1580,7 @@ function buildLibPreview() {
   if (seq !== LIB.seq || S.space !== 'lib') return;
   dropLibPreview();
   LIB.preview = parts.map((pt) => { const L = libLevel(pt); L.name = pt.name; return L; });
+  if (SK.open && !SK.drag) { skLoad(); skDraw(); }
   const faces = LIB.preview.reduce((n, L) => n + L.nt, 0);
   $('libStatus').textContent = 'Aperçu : ' + parts.length + ' pièce' + (parts.length > 1 ? 's' : '') + ' (' + parts.map((p) => p.name).join(', ') + ') · ' + fmtN(faces) + ' faces · ' + Math.round(performance.now() - t0) + ' ms';
   if (!LIB.framed) {
@@ -1585,11 +1594,14 @@ function frameLib() {
   if (!LIB.preview.length) return;
   const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
   for (const L of LIB.preview) for (let i = 0; i < L.pos.length; i += 3) for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], L.pos[i + k]); mx[k] = Math.max(mx[k], L.pos[i + k]); }
-  cam.frame(mn, mx); sceneRadius = Math.max(1e-3, V.len(V.sub(mx, mn)) / 2) + V.len(V.scale(V.add(mn, mx), 0.5)); req();
+  cam.frame(mn, mx); sceneRadius = Math.max(1e-3, V.len(V.sub(mx, mn)) / 2) + V.len(V.scale(V.add(mn, mx), 0.5));
+  // panneau d'esquisses ouvert : on recentre le modèle dans la partie libre de la vue
+  if (SK.open) { const wp = $('skPanel').getBoundingClientRect().width + 12, w = cam.w; if (w - wp > 120) { cam.zoom(Math.min(1.8, w / (w - wp))); cam.pan(-wp / 2, 0); } }
+  req();
 }
 function selectSample(id) {
   if (LIB.id === id && LIB.preview.length) return;
-  LIB.id = id; LIB.framed = false; buildLibForm(); refreshLibList(); scheduleLibPreview(0);
+  LIB.id = id; LIB.framed = false; SK.sel = -1; buildLibForm(); refreshLibList(); scheduleLibPreview(0); if (SK.open) { skLoad(); SK.fit = null; skDraw(); }
 }
 function fmtParam(q, v) {
   if (q.fmt) return q.fmt(v);
@@ -1640,6 +1652,7 @@ function buildLibForm() {
 function refreshLibVisibility() {
   const s = libSample(), v = libValues();
   $('libZsRow').hidden = !(typeof s.zs === 'function' ? s.zs(v) : s.zs && v.mode !== 'volume');
+  const skOk = !!Samples.sketches(LIB.id, v); $('libSkRow').hidden = !skOk; if (!skOk && SK.open) setSkOpen(false);
   for (const q of s.params) { const row = $('libForm').querySelector('[data-key="' + q.key + '"]'); if (row) row.hidden = q.show ? !q.show(v) : false; }
 }
 function refreshLibList() {
@@ -1683,30 +1696,261 @@ function buildLibUI() {
     wrap.appendChild(el);
   }
   $('spaceLib').addEventListener('click', () => setSpace('lib'));
-  $('libReset').addEventListener('click', () => { LIB.values[LIB.id] = Samples.defaults(LIB.id); buildLibForm(); scheduleLibPreview(0); });
+  $('libReset').addEventListener('click', () => { LIB.values[LIB.id] = Samples.defaults(LIB.id); buildLibForm(); scheduleLibPreview(0); if (SK.open) { SK.sel = -1; skLoad(); SK.fit = null; skDraw(); } });
   $('libFrame').addEventListener('click', frameLib);
   $('libNew').addEventListener('click', () => libCreate(true));
   $('libAdd').addEventListener('click', () => libCreate(false));
+  buildSketchUI();
   refreshLibList(); buildLibForm();
+}
+
+
+// ------------------------------------------------------------ esquisses de construction (chevalière surfacique)
+const SK_VIEWS = {
+  face: { label: 'Face', ax: ['X', 'Y'], col: '227,164,79' },
+  cote: { label: 'Côté', ax: ['Z', 'Y'], col: '127,178,229' },
+  dessus: { label: 'Dessus', ax: ['X', 'Z'], col: '143,196,106' },
+};
+const SK = { open: false, view: 'face', sel: -1, data: null, cur: null, fit: null, drag: null, lastTap: { t: 0, idx: -1 } };
+const skCanvas = $('skCanvas'), skx = skCanvas.getContext('2d');
+const skClone = (x) => JSON.parse(JSON.stringify(x));
+function skAvailable() { return S.space === 'lib' && !!Samples.sketches(LIB.id, libValues()); }
+function skLoad() {
+  SK.data = Samples.sketches(LIB.id, libValues());
+  SK.cur = SK.data ? { pts: skClone(SK.data[SK.view]), closed: false } : null;
+  if (SK.sel >= (SK.cur ? SK.cur.pts.length : 0)) SK.sel = -1;
+}
+function setSkOpen(on) {
+  on = on && skAvailable(); SK.open = on;
+  $('skPanel').hidden = !on; $('libSketch').classList.toggle('on', on);
+  if (on) { skLoad(); SK.fit = null; skDraw(); }
+  frameLib();
+}
+function setSkView(v) { SK.view = v; SK.sel = -1; skLoad(); SK.fit = null; skDraw(); req(); }
+// Géométrie de référence et reflets de chaque vue, en coordonnées d'esquisse
+function skScene() {
+  const D = SK.data, V = SK.view, poly = Curves.polyline(SK.cur, 24), ref = [], ghost = [], guides = [];
+  const mir = (pts, fx, fy) => pts.map((q) => [q[0] * fx, q[1] * fy]);
+  if (V === 'face') {
+    ghost.push(mir(poly, -1, 1));
+    const c = []; for (let i = 0; i <= 96; i++) { const t = (i / 96) * 2 * Math.PI; c.push([Math.cos(t) * D.ri, Math.sin(t) * D.ri]); } ref.push(c);
+    guides.push([[D.a, D.yBot - 1], [D.a, D.yTop + 1]], [[-D.a, D.yBot - 1], [-D.a, D.yTop + 1]]);
+  } else if (V === 'cote') {
+    ghost.push(mir(poly, -1, 1));
+    const w = D.b + 1; ref.push([[-w, D.ri], [w, D.ri]], [[-w, -D.ri], [w, -D.ri]]);
+    guides.push([[-w, D.yTop], [w, D.yTop]]);
+  } else {
+    ghost.push(mir(poly, -1, 1), mir(poly, -1, -1), mir(poly, 1, -1));
+    guides.push([[-D.a - 1, 0], [D.a + 1, 0]], [[0, -D.b - 1], [0, D.b + 1]]);
+  }
+  return { poly, ref, ghost, guides };
+}
+function skResize() {
+  const r = skCanvas.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (skCanvas.width !== w || skCanvas.height !== h) { skCanvas.width = w; skCanvas.height = h; SK.fit = null; }
+  return { w: r.width, h: r.height, dpr };
+}
+function skFitView(W, H) {
+  const sc = skScene(), mn = [Infinity, Infinity], mx = [-Infinity, -Infinity];
+  for (const set of [[sc.poly], sc.ghost, sc.ref]) for (const pl of set) for (const q of pl) { mn[0] = Math.min(mn[0], q[0]); mn[1] = Math.min(mn[1], q[1]); mx[0] = Math.max(mx[0], q[0]); mx[1] = Math.max(mx[1], q[1]); }
+  for (const A of SK.cur.pts) for (const q of [A.i, A.o]) { mn[0] = Math.min(mn[0], q[0]); mn[1] = Math.min(mn[1], q[1]); mx[0] = Math.max(mx[0], q[0]); mx[1] = Math.max(mx[1], q[1]); }
+  const m = 28, k = Math.min((W - 2 * m) / Math.max(1e-3, mx[0] - mn[0]), (H - 2 * m) / Math.max(1e-3, mx[1] - mn[1]));
+  SK.fit = { k, cx: (mn[0] + mx[0]) / 2, cy: (mn[1] + mx[1]) / 2, W, H };
+}
+const skTo = (q) => [SK.fit.W / 2 + (q[0] - SK.fit.cx) * SK.fit.k, SK.fit.H / 2 - (q[1] - SK.fit.cy) * SK.fit.k];
+const skFrom = (x, y) => [SK.fit.cx + (x - SK.fit.W / 2) / SK.fit.k, SK.fit.cy - (y - SK.fit.H / 2) / SK.fit.k, 0];
+function skDraw() {
+  if (!SK.open || !SK.cur) return;
+  const { w, h, dpr } = skResize();
+  if (!SK.fit) skFitView(w, h);
+  const g = skx; g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const V = SK_VIEWS[SK.view], k = SK.fit.k;
+  // grille au millimètre
+  const a = skFrom(0, h), b = skFrom(w, 0);
+  for (const [step, alpha] of [[1, 0.05], [5, 0.11]]) {
+    if (step * k < 5) continue;
+    g.strokeStyle = 'rgba(235,229,220,' + alpha + ')'; g.lineWidth = 1; g.beginPath();
+    for (let x = Math.ceil(a[0] / step) * step; x <= b[0]; x += step) { const X = Math.round(skTo([x, 0])[0]) + 0.5; g.moveTo(X, 0); g.lineTo(X, h); }
+    for (let y = Math.ceil(a[1] / step) * step; y <= b[1]; y += step) { const Y = Math.round(skTo([0, y])[1]) + 0.5; g.moveTo(0, Y); g.lineTo(w, Y); }
+    g.stroke();
+  }
+  // axes
+  const o = skTo([0, 0]); g.lineWidth = 1;
+  g.strokeStyle = 'rgba(224,106,90,.55)'; g.beginPath(); g.moveTo(0, o[1]); g.lineTo(w, o[1]); g.stroke();
+  g.strokeStyle = 'rgba(143,196,106,.55)'; g.beginPath(); g.moveTo(o[0], 0); g.lineTo(o[0], h); g.stroke();
+  g.font = '500 10px "IBM Plex Mono", monospace'; g.fillStyle = 'rgba(235,229,220,.55)';
+  g.fillText(V.ax[0], w - 14, o[1] - 6); g.fillText(V.ax[1], o[0] + 6, 12);
+  const sc = skScene();
+  const line = (pl, close) => { g.beginPath(); pl.forEach((q, i) => { const p = skTo(q); if (i) g.lineTo(p[0], p[1]); else g.moveTo(p[0], p[1]); }); if (close) g.closePath(); g.stroke(); };
+  g.setLineDash([5, 4]); g.strokeStyle = 'rgba(235,229,220,.28)'; for (const l of sc.guides) line(l); g.setLineDash([]);
+  g.strokeStyle = 'rgba(235,229,220,.45)'; g.lineWidth = 1.2; for (const l of sc.ref) line(l);
+  g.strokeStyle = 'rgba(' + V.col + ',.35)'; g.lineWidth = 1.5; for (const l of sc.ghost) line(l);
+  g.strokeStyle = 'rgb(' + V.col + ')'; g.lineWidth = 2.5; line(sc.poly);
+  // poignées et points
+  const n = SK.cur.pts.length;
+  SK.cur.pts.forEach((A, i) => {
+    const p = skTo(A.p);
+    for (const wch of ['i', 'o']) {
+      if ((i === 0 && wch === 'i') || (i === n - 1 && wch === 'o')) continue;
+      if (Math.hypot(A[wch][0] - A.p[0], A[wch][1] - A.p[1]) < 1e-9) continue;
+      const q = skTo(A[wch]);
+      g.strokeStyle = 'rgba(235,229,220,.5)'; g.lineWidth = 1; g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]); g.stroke();
+      g.fillStyle = '#ebe5dc'; g.beginPath(); g.arc(q[0], q[1], 3.5, 0, Math.PI * 2); g.fill();
+    }
+    const on = i === SK.sel;
+    g.fillStyle = on ? 'rgb(' + V.col + ')' : '#201f1d'; g.strokeStyle = on ? '#fff' : 'rgb(' + V.col + ')'; g.lineWidth = 1.5;
+    g.beginPath(); if (A.smooth) g.arc(p[0], p[1], 5.5, 0, Math.PI * 2); else g.rect(p[0] - 5, p[1] - 5, 10, 10); g.fill(); g.stroke();
+  });
+  // cotes
+  const D = SK.data, f1 = (x) => x.toFixed(1).replace('.', ',');
+  const info = SK.view === 'face' ? 'Ø intérieur ' + f1(2 * D.ri) + ' mm · hauteur du plateau ' + f1(D.yTop - D.ri) + ' mm · total ' + f1(D.yTop - D.yBot) + ' mm'
+    : SK.view === 'cote' ? 'Plateau ' + f1(2 * D.b) + ' mm · dessous ' + f1(2 * Math.abs(SK.cur.pts[n - 1].p[0])) + ' mm (largeur extérieure)'
+      : 'Plateau ' + f1(2 * D.a) + ' × ' + f1(2 * D.b) + ' mm';
+  $('skInfo').textContent = info + (SK.sel >= 0 ? ' · point ' + (SK.sel + 1) + ' : ' + f1(SK.cur.pts[SK.sel].p[0]) + ' ; ' + f1(SK.cur.pts[SK.sel].p[1]) : '');
+  const mod = !!D.custom[SK.view];
+  $('skState').textContent = mod ? 'modifiée' : 'depuis les réglages'; $('skState').classList.toggle('mod', mod);
+  document.querySelectorAll('[data-skview]').forEach((b) => { b.classList.toggle('on', b.dataset.skview === SK.view); b.textContent = SK_VIEWS[b.dataset.skview].label + (D.custom[b.dataset.skview] ? ' •' : ''); });
+  $('skDel').disabled = !(SK.sel > 0 && SK.sel < n - 1) || n <= 2; $('skCorner').disabled = SK.sel < 0;
+}
+// Contraintes : extrémités sur l'axe de symétrie, tangentes perpendiculaires à l'axe si le point est lisse
+function skConstrain() {
+  const P = SK.cur.pts, n = P.length, V = SK.view;
+  const lock = (A, axis, val) => { const d = val - A.p[axis]; for (const w of ['p', 'i', 'o']) A[w][axis] += d; };
+  const flat = (A, axis) => { if (A.smooth) for (const w of ['i', 'o']) A[w][axis] = A.p[axis]; };
+  if (V === 'face') { lock(P[0], 0, 0); lock(P[n - 1], 0, 0); flat(P[0], 1); flat(P[n - 1], 1); }
+  else if (V === 'dessus') { lock(P[0], 0, 0); lock(P[n - 1], 1, 0); flat(P[0], 1); flat(P[n - 1], 0); }
+}
+function skCommit(preview = 50) {
+  const v = libValues(); v.sketch = Object.assign({}, v.sketch, { [SK.view]: { pts: skClone(SK.cur.pts), ri: SK.data.ri } });
+  SK.data = Samples.sketches(LIB.id, v);
+  scheduleLibPreview(preview); skDraw(); req();
+}
+const skSnap = () => skClone(libValues().sketch || null);
+function skPushUndo(before, label) { pushUndo({ type: 'libsk', id: LIB.id, label, before, after: skSnap() }); }
+function skRestore(id, val) {
+  if (!LIB.values[id]) LIB.values[id] = Samples.defaults(id);
+  if (val) LIB.values[id].sketch = skClone(val); else delete LIB.values[id].sketch;
+  if (LIB.id === id && S.space === 'lib') { skLoad(); skDraw(); scheduleLibPreview(0); }
+}
+function skHit(x, y) {
+  const P = SK.cur.pts, n = P.length, R = SK.drag && SK.drag.touch ? 16 : 10;
+  for (let i = 0; i < n; i++) for (const w of ['i', 'o']) {
+    if ((i === 0 && w === 'i') || (i === n - 1 && w === 'o')) continue;
+    if (Math.hypot(P[i][w][0] - P[i].p[0], P[i][w][1] - P[i].p[1]) < 1e-9) continue;
+    const q = skTo(P[i][w]); if (Math.hypot(q[0] - x, q[1] - y) < R) return { type: 'handle', idx: i, which: w };
+  }
+  let best = null;
+  P.forEach((A, i) => { const q = skTo(A.p), d = Math.hypot(q[0] - x, q[1] - y); if (d < R + 2 && (!best || d < best.d)) best = { type: 'anchor', idx: i, d }; });
+  return best;
+}
+function skToggleSmooth(idx) {
+  const before = skSnap(), A = SK.cur.pts[idx];
+  Curves.setSmooth(SK.cur, idx, !A.smooth); skConstrain(); skCommit(0); skPushUndo(before, A.smooth ? 'point lisse' : 'point anguleux');
+}
+function skDeletePoint() {
+  const n = SK.cur.pts.length; if (!(SK.sel > 0 && SK.sel < n - 1)) return;
+  const before = skSnap(); Curves.removeAnchor(SK.cur, SK.sel); SK.sel = -1; skCommit(0); skPushUndo(before, 'supprimer un point d’esquisse');
+}
+function buildSketchUI() {
+  $('libSketch').addEventListener('click', () => setSkOpen(!SK.open));
+  $('skClose').addEventListener('click', () => setSkOpen(false));
+  document.querySelectorAll('[data-skview]').forEach((b) => b.addEventListener('click', () => setSkView(b.dataset.skview)));
+  $('skFit').addEventListener('click', () => { SK.fit = null; skDraw(); });
+  $('skDel').addEventListener('click', skDeletePoint);
+  $('skCorner').addEventListener('click', () => { if (SK.sel >= 0) skToggleSmooth(SK.sel); });
+  $('skReset').addEventListener('click', () => {
+    const v = libValues(); if (!v.sketch || !v.sketch[SK.view]) { toast('Cette esquisse suit déjà les réglages.'); return; }
+    const before = skSnap(); const nv = Object.assign({}, v.sketch); delete nv[SK.view];
+    v.sketch = Object.keys(nv).length ? nv : undefined; if (!v.sketch) delete v.sketch;
+    SK.sel = -1; skLoad(); SK.fit = null; skDraw(); scheduleLibPreview(0); skPushUndo(before, 'réinitialiser l’esquisse');
+  });
+  skCanvas.addEventListener('pointerdown', (e) => {
+    if (!SK.cur || e.button > 0) return;
+    e.preventDefault(); try { skCanvas.setPointerCapture(e.pointerId); } catch (_) { /* rien */ }
+    const r = skCanvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, touch = e.pointerType !== 'mouse';
+    SK.drag = { touch };
+    const hit = skHit(x, y), now = performance.now();
+    const dbl = now - SK.lastTap.t < 380 && Math.hypot(x - SK.lastTap.x, y - SK.lastTap.y) < 14;
+    SK.lastTap = { t: now, x, y };
+    if (hit && hit.type === 'anchor' && (dbl || e.altKey)) { SK.sel = hit.idx; SK.drag = null; skToggleSmooth(hit.idx); return; }
+    if (hit) { if (hit.type === 'anchor') SK.sel = hit.idx; SK.drag = { ...hit, touch, before: skSnap(), moved: false, x0: x, y0: y }; skDraw(); return; }
+    const near = Curves.nearest(SK.cur, (q) => skTo(q), x, y, 32);
+    if (dbl && near.d < (touch ? 16 : 10)) {
+      const before = skSnap(); SK.sel = Curves.splitAt(SK.cur, near.k, near.t); skCommit(0); skPushUndo(before, 'ajouter un point d’esquisse'); SK.drag = null; return;
+    }
+    SK.sel = -1; SK.drag = { type: 'pan', touch, x0: x, y0: y, cx: SK.fit.cx, cy: SK.fit.cy }; skDraw();
+  });
+  skCanvas.addEventListener('pointermove', (e) => {
+    const d = SK.drag; if (!d || !d.type) return;
+    const r = skCanvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    if (d.type === 'pan') { SK.fit.cx = d.cx - (x - d.x0) / SK.fit.k; SK.fit.cy = d.cy + (y - d.y0) / SK.fit.k; skDraw(); return; }
+    if (!d.moved && Math.hypot(x - d.x0, y - d.y0) < 2) return;
+    d.moved = true;
+    const q = skFrom(x, y);
+    if (d.type === 'anchor') Curves.moveAnchor(SK.cur, d.idx, q); else Curves.moveHandle(SK.cur, d.idx, d.which, q);
+    skConstrain(); skCommit(60);
+  });
+  const up = () => {
+    const d = SK.drag; SK.drag = null;
+    if (d && d.moved && d.before !== undefined) {
+      skPushUndo(d.before, d.type === 'anchor' ? 'déplacer un point d’esquisse' : 'poignée d’esquisse');
+      if (SK.cur.pts.some((A) => { const q = skTo(A.p); return q[0] < 8 || q[1] < 8 || q[0] > SK.fit.W - 8 || q[1] > SK.fit.H - 8; })) { SK.fit = null; skDraw(); }
+    }
+  };
+  skCanvas.addEventListener('pointerup', up); skCanvas.addEventListener('pointercancel', up);
+  skCanvas.addEventListener('wheel', (e) => {
+    e.preventDefault(); if (!SK.fit) return;
+    const r = skCanvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top, before = skFrom(x, y);
+    SK.fit.k *= Math.exp(-e.deltaY * 0.0015); const after = skFrom(x, y);
+    SK.fit.cx += before[0] - after[0]; SK.fit.cy += before[1] - after[1]; skDraw();
+  }, { passive: false });
+  new ResizeObserver(() => { if (SK.open) { SK.fit = null; skDraw(); } }).observe(skCanvas);
+}
+// Esquisses dessinées dans la vue 3D, dans leurs plans
+function drawSketches3D() {
+  if (!SK.open || !SK.data) return;
+  const D = SK.data;
+  const to3 = { face: (q, s) => [q[0] * s[0], q[1], 0], cote: (q, s) => [0, q[1], q[0] * s[0]], dessus: (q, s) => [q[0] * s[0], D.yTop, q[1] * s[1]] };
+  const mirrors = { face: [[1, 1], [-1, 1]], cote: [[1, 1], [-1, 1]], dessus: [[1, 1], [-1, 1], [-1, -1], [1, -1]] };
+  for (const v of ['face', 'cote', 'dessus']) {
+    const pts = v === SK.view && SK.cur ? SK.cur.pts : D[v], poly = Curves.polyline({ pts, closed: false }, 20), on = v === SK.view;
+    for (const m of mirrors[v]) {
+      drawPolyline(poly.map((q) => to3[v](q, m)), false);
+      octx.strokeStyle = 'rgba(' + SK_VIEWS[v].col + ',' + (on ? (m[0] > 0 && m[1] > 0 ? 1 : 0.55) : 0.3) + ')'; octx.lineWidth = on ? 2.2 : 1.3; octx.stroke();
+    }
+    if (on) for (const A of pts) { const p = proj2(to3[v](A.p, [1, 1])); if (!p) continue; octx.fillStyle = 'rgb(' + SK_VIEWS[v].col + ')'; octx.beginPath(); octx.arc(p[0], p[1], 3, 0, Math.PI * 2); octx.fill(); }
+  }
 }
 
 // ------------------------------------------------------------ ZSpheres
 const ZS_TOOLS = [
-  { id: 'add', code: 'Aj', key: '1', label: 'Ajouter', hint: 'Glisser depuis une sphère crée un enfant ; cliquer sur un lien insère une sphère' },
-  { id: 'move', code: 'Dp', key: '2', label: 'Déplacer', hint: 'Glisser une sphère pour la déplacer' },
-  { id: 'scale', code: 'Éc', key: '3', label: 'Échelle', hint: 'Glisser verticalement sur une sphère pour changer son rayon' },
-  { id: 'del', code: 'Su', key: '4', label: 'Supprimer', hint: 'Toucher une sphère pour la retirer (ses enfants sont rattachés au parent)' },
+  { id: 'add', code: 'Aj', key: '1', label: 'Ajouter', hint: 'Glisser depuis un nœud (sphère ou boîte) crée un enfant ; cliquer sur un lien insère un nœud' },
+  { id: 'move', code: 'Dp', key: '2', label: 'Déplacer', hint: 'Glisser un nœud pour le déplacer' },
+  { id: 'scale', code: 'Éc', key: '3', label: 'Échelle', hint: 'Glisser verticalement sur un nœud pour changer sa taille' },
+  { id: 'del', code: 'Su', key: '4', label: 'Supprimer', hint: 'Toucher un nœud pour le retirer (ses enfants sont rattachés au parent)' },
 ];
-const ZS = { nodes: [], sel: -1, tool: 'add', sym: true, skin: false, subdiv: 3, density: 1, level: null, skinLevel: null, timer: 0, savedCam: null, framed: false };
-let sphereTpl = null;
-const zsSnap = () => ({ nodes: ZS.nodes.map((n) => ({ ...n, p: n.p.slice() })), sel: ZS.sel });
-function zsRestore(s) { ZS.nodes = s.nodes.map((n) => ({ ...n, p: n.p.slice() })); ZS.sel = s.sel; zsChanged(true); }
+const ZS = { nodes: [], sel: -1, tool: 'add', sym: true, skin: false, subdiv: 3, density: 1, shape: 'sphere', chamfer: 0.15, profile: 'arrondi', frames: [], level: null, skinLevel: null, timer: 0, savedCam: null, framed: false };
+const zsBox = () => ZS.shape === 'box';
+const zsOpts = () => ({ density: ZS.density, shape: ZS.shape, chamfer: ZS.chamfer, profile: ZS.profile });
+const zsHalf = (n) => [n.r * (zsBox() ? n.sx || 1 : 1), n.r * (zsBox() ? n.sy || 1 : 1), n.r * 0.6];
+let sphereTpl = null, boxTplM = null;
+// boîte unité chanfreinée (demi-côtés 1), pour l'affichage des nœuds en mode Boîtes
+function boxTpl() {
+  if (boxTplM) return boxTplM;
+  const V0 = []; for (let k = 0; k < 8; k++) V0.push([k & 1 ? 1 : -1, k & 2 ? 1 : -1, k & 4 ? 1 : -1]);
+  const cube = Surface.orient({ V: V0, F: [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]], G: [0, 0, 0, 0, 0, 0] });
+  const m = Surface.toTriMesh(Surface.bevel(cube, 0.12)); // les faces restent sur leurs plans : demi-côtés de 1
+  return (boxTplM = { pos: m.pos, idx: m.idx, nv: m.nv });
+}
+const zsSnap = () => ({ nodes: ZS.nodes.map((n) => ({ ...n, p: n.p.slice() })), sel: ZS.sel, shape: ZS.shape });
+function zsRestore(s) { ZS.nodes = s.nodes.map((n) => ({ ...n, p: n.p.slice() })); ZS.sel = s.sel; if (s.shape && s.shape !== ZS.shape) setZsShape(s.shape, true); zsChanged(true); }
 function zsLoadTemplate(t) {
   let nodes;
-  if (t === 'sphere') nodes = [{ p: [0, 0, 0], r: 1, parent: -1, part: 0 }];
+  if (t === 'sphere') nodes = [{ p: [0, 0, 0], r: 1, parent: -1, part: 0, sx: 1.4, sy: 0.8 }];
   else if (t === 'humanoide') nodes = Samples.skeleton('humanoide', LIB.values.humanoide || {});
   else nodes = Samples.skeleton('animal', Object.assign({}, LIB.values.animal || {}, { espece: t, mode: 'zspheres' }));
-  ZS.nodes = nodes.map((n) => ({ p: n.p.slice(), r: n.r, parent: n.parent, part: n.part || 0 })); ZS.sel = -1; ZS.framed = false;
+  ZS.nodes = nodes.map((n) => ({ p: n.p.slice(), r: n.r, parent: n.parent, part: n.part || 0, sx: n.sx || 1, sy: n.sy || 1 })); ZS.sel = -1; ZS.framed = false;
   zsChanged(true);
 }
 function zsMirror(i) {
@@ -1728,7 +1972,8 @@ function zsRemove(ids) {
 }
 function buildSphereLevel() {
   if (!sphereTpl) sphereTpl = Core.icosphere(2);
-  const T = sphereTpl, links = [];
+  ZS.frames = Surface.zsNodeFrames(ZS.nodes, zsBox());
+  const T = zsBox() ? boxTpl() : sphereTpl, links = [];
   ZS.nodes.forEach((n, i) => { if (n.parent >= 0) { const p = ZS.nodes[n.parent]; links.push(SDF.cylinderMesh(p.p, n.p, Math.min(n.r, p.r) * 0.16, 10)); } });
   const nvS = ZS.nodes.length * T.nv, ntS = ZS.nodes.length * T.idx.length / 3;
   let nv = nvS, nt = ntS; for (const l of links) { nv += l.nv; nt += l.idx.length / 3; }
@@ -1736,7 +1981,10 @@ function buildSphereLevel() {
   let ov = 0, oi = 0;
   ZS.nodes.forEach((n, i) => {
     const c = i === ZS.sel ? [240, 196, 90] : n.parent < 0 ? [190, 120, 200] : [196, 74, 52];
-    for (let v = 0; v < T.nv; v++) { pos.set([n.p[0] + T.pos[3 * v] * n.r, n.p[1] + T.pos[3 * v + 1] * n.r, n.p[2] + T.pos[3 * v + 2] * n.r], 3 * (ov + v)); col.set([...c, 255], 4 * (ov + v)); }
+    if (zsBox()) {
+      const f = ZS.frames[i], [w, h, l] = zsHalf(n);
+      for (let v = 0; v < T.nv; v++) { const x = T.pos[3 * v] * w, y = T.pos[3 * v + 1] * h, z = T.pos[3 * v + 2] * l; pos.set([0, 1, 2].map((k) => n.p[k] + f.u[k] * x + f.v[k] * y + f.d[k] * z), 3 * (ov + v)); col.set([...c, 255], 4 * (ov + v)); }
+    } else for (let v = 0; v < T.nv; v++) { pos.set([n.p[0] + T.pos[3 * v] * n.r, n.p[1] + T.pos[3 * v + 1] * n.r, n.p[2] + T.pos[3 * v + 2] * n.r], 3 * (ov + v)); col.set([...c, 255], 4 * (ov + v)); }
     for (let k = 0; k < T.idx.length; k++) idx[oi + k] = T.idx[k] + ov;
     ov += T.nv; oi += T.idx.length;
   });
@@ -1750,7 +1998,9 @@ function buildSphereLevel() {
 function zsChanged(full) {
   if (ZS.level) releaseLevel(ZS.level);
   ZS.level = ZS.nodes.length ? buildSphereLevel() : null;
-  $('zsStatus').textContent = ZS.nodes.length + ' sphère' + (ZS.nodes.length > 1 ? 's' : '') + (ZS.sel >= 0 ? ' · sélection n° ' + ZS.sel : '');
+  const word = zsBox() ? ' boîte' : ' sphère';
+  $('zsStatus').classList.remove('err');
+  $('zsStatus').textContent = ZS.nodes.length + word + (ZS.nodes.length > 1 ? 's' : '') + (ZS.sel >= 0 ? ' · sélection n° ' + ZS.sel : '');
   refreshZsRadius();
   if (ZS.skin) { clearTimeout(ZS.timer); ZS.timer = setTimeout(buildSkinPreview, full ? 0 : 120); }
   if (!ZS.framed && ZS.nodes.length && S.space === 'zs') { cam.q = Q.norm(Q.mul(Q.axis([0, 1, 0], -0.45), Q.axis([1, 0, 0], -0.15))); frameZS(); ZS.framed = true; }
@@ -1760,7 +2010,7 @@ function buildSkinPreview() {
   if (ZS.skinLevel) { releaseLevel(ZS.skinLevel); ZS.skinLevel = null; }
   if (!ZS.skin || !ZS.nodes.length) return req();
   try {
-    const m = Surface.skinZSpheres(ZS.nodes, Math.min(ZS.subdiv, 2), { density: ZS.density });
+    const m = Surface.skinZSpheres(ZS.nodes, Math.min(ZS.subdiv, 2), zsOpts());
     ZS.skinLevel = Core.makeLevel(m.pos, m.idx, m.nv, { groups: m.groups, qflags: m.qflags });
     $('zsStatus').classList.remove('err');
   } catch (e) { $('zsStatus').classList.add('err'); $('zsStatus').textContent = e.message; }
@@ -1774,6 +2024,21 @@ function frameZS() {
 }
 function zsPick(x, y) {
   const r = cam.ray(x, y); let best = null;
+  if (zsBox()) { // boîtes orientées (lancer de rayon par plaques)
+    ZS.nodes.forEach((n, i) => {
+      const f = ZS.frames[i]; if (!f) return;
+      const half = zsHalf(n).map((h) => Math.max(h, n.r * 0.3)), ax = [f.u, f.v, f.d], oc = V.sub(r.o, n.p);
+      let t0 = -Infinity, t1 = Infinity;
+      for (let k = 0; k < 3; k++) {
+        const o = V.dot(oc, ax[k]), d = V.dot(r.d, ax[k]);
+        if (Math.abs(d) < 1e-12) { if (Math.abs(o) > half[k]) return; continue; }
+        let a = (-half[k] - o) / d, b = (half[k] - o) / d; if (a > b) [a, b] = [b, a];
+        t0 = Math.max(t0, a); t1 = Math.min(t1, b); if (t0 > t1) return;
+      }
+      if (t0 > 0 && (!best || t0 < best.t)) best = { i, t: t0, p: V.add(r.o, V.scale(r.d, t0)) };
+    });
+    return best;
+  }
   ZS.nodes.forEach((n, i) => {
     const oc = V.sub(r.o, n.p), b = V.dot(oc, r.d), c = V.dot(oc, oc) - n.r * n.r, h = b * b - c;
     if (h < 0) return; const t = -b - Math.sqrt(h);
@@ -1801,7 +2066,7 @@ function zsDown(e, x, y) {
   if (!hit) {
     const lk = tool === 'add' ? zsPickLink(x, y) : null;
     if (lk) {
-      const ins = (child, f) => { const c = ZS.nodes[child], par = c.parent, P = ZS.nodes[par]; ZS.nodes.push({ p: V.add(P.p, V.scale(V.sub(c.p, P.p), f)), r: P.r + (c.r - P.r) * f, parent: par, part: c.part }); c.parent = ZS.nodes.length - 1; return ZS.nodes.length - 1; };
+      const ins = (child, f) => { const c = ZS.nodes[child], par = c.parent, P = ZS.nodes[par]; ZS.nodes.push({ p: V.add(P.p, V.scale(V.sub(c.p, P.p), f)), r: P.r + (c.r - P.r) * f, parent: par, part: c.part, sx: (P.sx || 1) + ((c.sx || 1) - (P.sx || 1)) * f, sy: (P.sy || 1) + ((c.sy || 1) - (P.sy || 1)) * f }); c.parent = ZS.nodes.length - 1; return ZS.nodes.length - 1; };
       const m = ZS.sym ? zsMirror(lk.child) : -1;
       ZS.sel = ins(lk.child, lk.f); if (m >= 0 && m !== lk.child) ins(m, lk.f);
       pushUndo({ type: 'zs', label: 'insérer une sphère', before, after: zsSnap() }); zsChanged(); drag = { kind: 'none' }; return;
@@ -1816,9 +2081,9 @@ function zsDown(e, x, y) {
   }
   if (tool === 'add') {
     const n = ZS.nodes[i], m = ZS.sym ? zsMirror(i) : -1;
-    ZS.nodes.push({ p: hit.p.slice(), r: n.r * 0.75, parent: i, part: n.part }); const c = ZS.nodes.length - 1;
+    ZS.nodes.push({ p: hit.p.slice(), r: n.r * 0.75, parent: i, part: n.part, sx: n.sx || 1, sy: n.sy || 1 }); const c = ZS.nodes.length - 1;
     let cm = -1;
-    if (ZS.sym && Math.abs(hit.p[0]) > n.r * 0.05) { const mp = m >= 0 ? m : i; ZS.nodes.push({ p: [-hit.p[0], hit.p[1], hit.p[2]], r: n.r * 0.75, parent: mp, part: n.part }); cm = ZS.nodes.length - 1; }
+    if (ZS.sym && Math.abs(hit.p[0]) > n.r * 0.05) { const mp = m >= 0 ? m : i; ZS.nodes.push({ p: [-hit.p[0], hit.p[1], hit.p[2]], r: n.r * 0.75, parent: mp, part: n.part, sx: n.sx || 1, sy: n.sy || 1 }); cm = ZS.nodes.length - 1; }
     ZS.sel = c; drag = { kind: 'zsMove', i: c, m: cm, plane: hit.p.slice(), before, label: 'ajouter une sphère', moved: true };
     zsChanged(); return;
   }
@@ -1845,9 +2110,9 @@ function zsEnd() {
 function zsCreate(replace) {
   if (!ZS.nodes.length) { toast('Chargez d’abord un départ.'); return; }
   run('Peau adaptative…', () => {
-    const m = Surface.skinZSpheres(ZS.nodes, ZS.subdiv, { density: ZS.density });
+    const m = Surface.skinZSpheres(ZS.nodes, ZS.subdiv, zsOpts());
     const before = snapScene();
-    const st = Core.makeSubtool('ZSpheres', Core.makeLevel(m.pos, m.idx, m.nv, { groups: m.groups, qflags: m.qflags }));
+    const st = Core.makeSubtool(zsBox() ? 'ZBoxes' : 'ZSpheres', Core.makeLevel(m.pos, m.idx, m.nv, { groups: m.groups, qflags: m.qflags }));
     if (replace) { for (const s0 of S.subtools) for (const L of s0.levels) releaseLevel(L); S.subtools = [st]; S.active = 0; S.cvDef = null; }
     else { S.subtools.push(st); S.active = S.subtools.length - 1; }
     pushUndo({ type: 'scene', label: 'peau de ZSpheres', before, after: snapScene() });
@@ -1856,10 +2121,19 @@ function zsCreate(replace) {
   });
 }
 function setZsTool(t) { ZS.tool = t; if (S.space !== 'zs') setSpace('zs'); const d = ZS_TOOLS.find((x) => x.id === t); hint(d.label + ' — ' + d.hint); refreshUI(); }
+function setZsShape(sh, quiet) {
+  ZS.shape = sh; $('zsShape').value = sh; document.body.dataset.zsshape = sh;
+  if (sh === 'box' && ZS.subdiv > 2) { ZS.subdiv = 2; $('zsSubdiv').value = 2; $('zsSubdivOut').textContent = '2'; }
+  if (!quiet) zsChanged(true);
+}
 function setZsSkin(on) { ZS.skin = on; $('zsSkin').checked = on; if (on) buildSkinPreview(); else { if (ZS.skinLevel) releaseLevel(ZS.skinLevel); ZS.skinLevel = null; req(); } }
 const zrMin = () => sR() * 0.005, zrMax = () => sR() * 1.2;
 function refreshZsRadius() {
   const n = ZS.nodes[ZS.sel], el = $('zsRadius');
+  for (const k of ['sx', 'sy']) {
+    const inp = $('zs' + k.toUpperCase()), out = $('zs' + k.toUpperCase() + 'Out');
+    inp.disabled = !n; inp.value = n ? Math.round((n[k] || 1) * 100) : 100; out.textContent = n ? '× ' + (n[k] || 1).toFixed(2).replace('.', ',') : '—';
+  }
   el.disabled = !n; if (!n) { $('zsRadiusOut').textContent = '—'; return; }
   el.value = Math.round(1000 * Math.log(Math.max(n.r, zrMin()) / zrMin()) / Math.log(zrMax() / zrMin()));
   $('zsRadiusOut').textContent = n.r < 0.1 ? n.r.toFixed(3) : n.r.toFixed(2);
@@ -1882,13 +2156,28 @@ function buildZsUI() {
     n.r = r; if (m >= 0) ZS.nodes[m].r = r; zsChanged();
   });
   $('zsRadius').addEventListener('change', () => { if (rBefore) pushUndo({ type: 'zs', label: 'rayon d’une sphère', before: rBefore, after: zsSnap() }); rBefore = null; });
+  for (const k of ['sx', 'sy']) {
+    let before = null;
+    $('zs' + k.toUpperCase()).addEventListener('input', (e) => {
+      const n = ZS.nodes[ZS.sel]; if (!n) return; if (!before) before = zsSnap();
+      const m = ZS.sym ? zsMirror(ZS.sel) : -1; n[k] = +e.target.value / 100; if (m >= 0) ZS.nodes[m][k] = n[k]; zsChanged();
+    });
+    $('zs' + k.toUpperCase()).addEventListener('change', () => { if (before) pushUndo({ type: 'zs', label: k === 'sx' ? 'largeur d’une boîte' : 'épaisseur d’une boîte', before, after: zsSnap() }); before = null; });
+  }
+  $('zsShape').addEventListener('change', (e) => { const before = zsSnap(); setZsShape(e.target.value); pushUndo({ type: 'zs', label: 'forme des nœuds', before, after: zsSnap() }); });
+  $('zsChamfer').addEventListener('input', (e) => { ZS.chamfer = +e.target.value / 100; $('zsChamferOut').textContent = e.target.value + ' %'; if (ZS.skin) { clearTimeout(ZS.timer); ZS.timer = setTimeout(buildSkinPreview, 80); } });
+  $('zsProfile').addEventListener('change', (e) => { ZS.profile = e.target.value; if (ZS.skin) buildSkinPreview(); });
   $('zsSubdiv').addEventListener('input', (e) => { ZS.subdiv = +e.target.value; $('zsSubdivOut').textContent = e.target.value; if (ZS.skin) buildSkinPreview(); });
   $('zsDensity').addEventListener('input', (e) => { ZS.density = +e.target.value / 10; $('zsDensityOut').textContent = ZS.density.toFixed(1).replace('.', ','); if (ZS.skin) { clearTimeout(ZS.timer); ZS.timer = setTimeout(buildSkinPreview, 120); } });
   $('zsNew').addEventListener('click', () => zsCreate(true));
   $('zsAdd').addEventListener('click', () => zsCreate(false));
+  setZsShape('sphere', true);
   $('libToZS').addEventListener('click', () => {
     const sk = Samples.skeleton(LIB.id, libValues()); if (!sk) return;
-    ZS.nodes = sk.map((n) => ({ p: n.p.slice(), r: n.r, parent: n.parent, part: n.part || 0 })); ZS.sel = -1; ZS.framed = false;
+    const v = libValues();
+    ZS.nodes = sk.map((n) => ({ p: n.p.slice(), r: n.r, parent: n.parent, part: n.part || 0, sx: 1, sy: 1 })); ZS.sel = -1; ZS.framed = false;
+    if (v.mode === 'boites') { ZS.chamfer = v.chanfrein; ZS.profile = v.profilChanfrein; $('zsChamfer').value = Math.round(v.chanfrein * 100); $('zsChamferOut').textContent = Math.round(v.chanfrein * 100) + ' %'; $('zsProfile').value = v.profilChanfrein; }
+    setZsShape(v.mode === 'boites' ? 'box' : 'sphere', true);
     setSpace('zs'); setZsSkin(false); zsChanged(true);
   });
 }
@@ -1921,7 +2210,7 @@ function buildGPRail() {
 }
 function setSpace(sp) {
   if (S.space === 'curves' && sp !== 'curves') { if (S.cvPen) cvPenFinish(false); dropGhost(); }
-  if (S.space === 'lib' && sp !== 'lib') { clearTimeout(LIB.timer); LIB.seq++; dropLibPreview(); if (!LIB.created && LIB.savedCam) cam.fromJSON(LIB.savedCam); updateBounds(); }
+  if (S.space === 'lib' && sp !== 'lib') { if (SK.open) setSkOpen(false); clearTimeout(LIB.timer); LIB.seq++; dropLibPreview(); if (!LIB.created && LIB.savedCam) cam.fromJSON(LIB.savedCam); updateBounds(); }
   if (S.space === 'zs' && sp !== 'zs') { clearTimeout(ZS.timer); if (!ZS.created && ZS.savedCam) cam.fromJSON(ZS.savedCam); updateBounds(); }
   if (sp === 'zs' && S.space !== 'zs') { ZS.savedCam = cam.toJSON(); ZS.created = false; if (!ZS.nodes.length) zsLoadTemplate('humanoide'); ZS.framed = false; const d = ZS_TOOLS.find((t) => t.id === ZS.tool); hint(d.label + ' — ' + d.hint); }
   if (sp === 'lib' && S.space !== 'lib') { LIB.savedCam = cam.toJSON(); LIB.created = false; LIB.framed = false; scheduleLibPreview(0); hint('Modèles — réglez les paramètres, puis « Nouvelle scène » ou « Ajouter à la scène ».'); }
@@ -2058,7 +2347,7 @@ async function boot() {
   setSize(S.brush.size); brushHint(); refreshUI(); updateBounds(); req();
   requestAnimationFrame(frame);
   refreshCurveUI();
-  window.argile = { S, cam, Core, Sculpt, GP, Curves, Samples, Surface, LIB, ZS, undoStack, textSDF }; // accès console pour le développement
+  window.argile = { S, cam, Core, Sculpt, GP, Curves, Samples, Surface, LIB, ZS, SK, undoStack, textSDF }; // accès console pour le développement
 }
 boot();
 })();

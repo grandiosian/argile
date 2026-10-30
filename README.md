@@ -42,13 +42,16 @@ Aperçu 3D à chaque réglage, puis « Nouvelle scène » ou « Ajouter à la sc
 
 **Modélisation surfacique** : la chevalière (mode par défaut) est une cage de quads paramétrique — sections autour de l'anneau, plateau plan, épaules, boucles de maintien pour des arêtes nettes — lissée par subdivision Catmull-Clark. Le rayon intérieur est corrigé pour tomber sur la taille demandée, le monogramme est gravé par déplacement des sommets, et le maillage reste tout en quads (le polyframe masque les diagonales).
 
+**Esquisses de construction** (bouton « Esquisses de construction » ou touche K) : la chevalière surfacique est pilotée par trois courbes de Bézier en millimètres — **Face** (profil extérieur, la moitié droite, le reste par symétrie, avec le cercle du doigt en référence), **Côté** (largeur de l'anneau selon la hauteur) et **Dessus** (quart du contour du plateau). Tant qu'une esquisse n'est pas touchée, elle suit les réglages ; une fois modifiée (repère •), elle prend le dessus, suit la taille de doigt, et « Réinitialiser » la rend aux réglages. Glisser points et poignées, double-clic sur la courbe pour ajouter un point, double-clic sur un point pour le rendre lisse ou anguleux, Suppr pour l'effacer ; molette pour zoomer, glisser dans le vide pour se déplacer. Les esquisses sont aussi tracées dans la vue 3D, dans leurs plans.
+
 ## Espace ZSpheres (Z)
 
 Squelette de sphères éditable, habillé d'une peau adaptative en quads (méthode B-Mesh : tubes à section carrée, enveloppe convexe aux embranchements, anneaux de maintien, puis Catmull-Clark). Départs : humanoïde, chien, chat, cheval, ours, lapin ou sphère seule ; les figures de l'espace Modèles s'ouvrent aussi en ZSpheres (« Éditer les ZSpheres »).
 
 - **Ajouter (1)** : glisser depuis une sphère crée une sphère enfant ; cliquer sur un lien en insère une.
 - **Déplacer (2)**, **Échelle (3)**, **Supprimer (4)** (ou Alt+clic) ; symétrie X ; rayon de la sphère sélectionnée réglable.
-- **A** : aperçu de la peau ; subdivisions 1–4 ; densité des liens. Un polygroupe par partie du corps.
+- **A** : aperçu de la peau ; subdivisions 0–4 ; densité des liens. Un polygroupe par partie du corps.
+- **Forme : Boîtes chanfreinées** — chaque nœud devient une boîte (largeur et épaisseur réglables par nœud), les liens des tubes à section rectangulaire à faces planes, les coudes en onglet et les bouts plats. Toutes les arêtes sont chanfreinées (proportion réglable) puis la subdivision arrondit le chanfrein (profil « Arrondi ») ou le garde net (profil « Plat »). Les figures de l'espace Modèles ont aussi un mode « Boîtes chanfreinées ».
 
 ## Architecture
 
@@ -59,8 +62,8 @@ Squelette de sphères éditable, habillé d'une peau adaptative en quads (métho
 | `src/gp.js` | Dessin 3D façon Grease Pencil : calques, traits (x, y, z, rayon), lissage, gomme par points ou traits entiers, conversion en tubes fermés (transport parallèle), lots GPU |
 | `src/curves.js` | Courbes de Bézier 3D : ajustement sur un tracé (Schneider) avec détection des coins, édition (insertion de Casteljau, poignées alignées), plan moyen (ACP), profils, balayage à repères par transport parallèle, forme → solide par champ signé 2D (remplissage + distance euclidienne exacte) et surface nets |
 | `src/sdf.js` | Modélisation par champs de distance : primitives (sphère, ellipsoïde, boîte, cône arrondi, cylindre, tore), unions lissées avec élagage par boîtes englobantes, transformations, étiquettes de polygroupes, mailleur par blocs (seule la bande autour de la surface est évaluée) ; maillages explicites (anneaux, cylindres, fusion, miroir) |
-| `src/surface.js` | Modélisation surfacique : maillages polygonaux, Catmull-Clark avec héritage des polygroupes, orientation cohérente, enveloppe convexe 3D, peau adaptative des ZSpheres, conversion en triangles avec drapeaux de diagonales de quads |
-| `src/samples.js` | Catalogue des modèles paramétriques (bijoux, figures, bâtiments) |
+| `src/surface.js` | Modélisation surfacique : maillages polygonaux, Catmull-Clark avec héritage des polygroupes, orientation cohérente, enveloppe convexe 3D, peau adaptative des ZSpheres, chanfrein générique (bevel), peau en boîtes (ZBoxes), conversion en triangles avec drapeaux de diagonales de quads |
+| `src/samples.js` | Catalogue des modèles paramétriques (bijoux, figures, bâtiments), esquisses de construction de la chevalière |
 | `src/io.js` | ZIP (écriture stockée, lecture stockée/deflate), format de projet binaire, sauvegarde auto IndexedDB |
 | `src/renderer.js` | Caméra trackball, rendu WebGPU : traits 3D en rubans + capuchons ronds (test de profondeur ou premier plan) ; draw non indexé qui lit sommets, normales, couleurs, masque et polygroupes dans des storage buffers ; matcaps procéduraux ; polyframe par barycentriques ; envoi GPU par blocs de 1024 sommets |
 | `src/app.js` | Interface, entrées souris/stylet (pression, coalesced events, lazy mouse), symétrie, SubTools, transformations, pile d'annulation |

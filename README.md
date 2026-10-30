@@ -5,7 +5,7 @@ Prototype de sculpture numérique façon ZBrush, en JavaScript + WebGPU, sans d�
 ## Lancer
 
 - `node build.js` assemble `dist/argile-standalone.html` (à ouvrir dans Safari 26 / Chrome / Edge) et `dist/argile.html` (version artefact).
-- `node test/core.test.js`, `node test/gp.test.js` et `node test/curves.test.js` lancent les tests (Node 20+).
+- `node test/core.test.js`, `node test/gp.test.js`, `node test/curves.test.js` et `node test/samples.test.js` lancent les tests (Node 20+).
 
 ## Version en ligne
 
@@ -30,6 +30,16 @@ la paume est ignorée tant que le stylet touche ou survole l'écran. Barre rapid
 - Profils : cercle, carré, carré arrondi, triangle, hexagone, étoile, demi-rond, losange, ou n'importe quelle forme dessinée ; rayon, largeur, effilement début/fin, torsion, rotation, densité, extrémités bouchées.
 - Aperçu 3D avant création, puis « Créer le SubTool » (Ctrl+Entrée). Les traits du Dessin 3D peuvent être convertis en courbes éditables.
 
+## Espace Modèles (M) — modèles paramétriques
+
+Unités réelles conservées à l'export OBJ : bijoux en millimètres, figures en centimètres, bâtiments en mètres.
+
+- **Bijoux** : chevalière (taille FR, plateau ovale/rond/carré/coussin/octogone, bombé, évasement, monogramme gravé ou en relief, inversé pour cachet) ; chevalière à clapet (cavité, couvercle articulé, charnière à jeu réglable, goupille, ouverture) ; collier (maille forçat/ronde/allongée, longueur, chute en V, fermoir, bélière, pendentif cœur/goutte/médaille/losange/étoile) ; boucle d'oreille (créole, pendante à crochet, puce à collet avec poussette, paire) ; bracelet à clapet (jonc ovale, charnière, fermoir à languette, ouverture).
+- **Figures** : humanoïde (taille, canon en têtes, corpulence, silhouette, pose, ébauche du visage) ; animal (chien, chat, cheval, ours, lapin, oiseau, poisson, proportions réglables). Polygroupes par partie du corps.
+- **Bâtiments** : bâtiment simple (niveaux, fenêtres et appuis, porte, corniches, toit deux pans/quatre pans/terrasse, cheminée) ; arche (plein cintre, brisée ou surbaissée, claveaux, clé saillante, mur) ; voûte néo-gothique (croisée d'ogives quadripartite, voûtains, nervures, clés, piliers fasciculés).
+
+Aperçu 3D à chaque réglage, puis « Nouvelle scène » ou « Ajouter à la scène » : chaque pièce devient un SubTool sculptable (annulable).
+
 ## Architecture
 
 | Fichier | Rôle |
@@ -38,6 +48,8 @@ la paume est ignorée tant que le stylet touche ou survole l'écran. Barre rapid
 | `src/sculpt.js` | Moteur de brosses CPU (Standard, Clay, ClayBuildup, Move, Inflate, Pinch, Flatten, DamStandard, Smooth, Mask, Polypaint), alphas, masques, polygroupes, visibilité, annulation par sommets |
 | `src/gp.js` | Dessin 3D façon Grease Pencil : calques, traits (x, y, z, rayon), lissage, gomme par points ou traits entiers, conversion en tubes fermés (transport parallèle), lots GPU |
 | `src/curves.js` | Courbes de Bézier 3D : ajustement sur un tracé (Schneider) avec détection des coins, édition (insertion de Casteljau, poignées alignées), plan moyen (ACP), profils, balayage à repères par transport parallèle, forme → solide par champ signé 2D (remplissage + distance euclidienne exacte) et surface nets |
+| `src/sdf.js` | Modélisation par champs de distance : primitives (sphère, ellipsoïde, boîte, cône arrondi, cylindre, tore), unions lissées avec élagage par boîtes englobantes, transformations, étiquettes de polygroupes, mailleur par blocs (seule la bande autour de la surface est évaluée) ; maillages explicites (anneaux, cylindres, fusion, miroir) |
+| `src/samples.js` | Catalogue des modèles paramétriques (bijoux, figures, bâtiments) |
 | `src/io.js` | ZIP (écriture stockée, lecture stockée/deflate), format de projet binaire, sauvegarde auto IndexedDB |
 | `src/renderer.js` | Caméra trackball, rendu WebGPU : traits 3D en rubans + capuchons ronds (test de profondeur ou premier plan) ; draw non indexé qui lit sommets, normales, couleurs, masque et polygroupes dans des storage buffers ; matcaps procéduraux ; polyframe par barycentriques ; envoi GPU par blocs de 1024 sommets |
 | `src/app.js` | Interface, entrées souris/stylet (pression, coalesced events, lazy mouse), symétrie, SubTools, transformations, pile d'annulation |

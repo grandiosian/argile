@@ -138,7 +138,17 @@ select.btn { padding-right: 6px; }
 body:not([data-space="gp"]) .only-gp { display: none !important; }
 body:not([data-space="sculpt"]) .only-sculpt { display: none !important; }
 body:not([data-space="curves"]) .only-curves { display: none !important; }
-body[data-space="sculpt"] .draw-place { display: none !important; }
+body[data-space="sculpt"] .draw-place, body[data-space="lib"] .draw-place { display: none !important; }
+body:not([data-space="lib"]) .only-lib { display: none !important; }
+.libitem { display: grid; gap: 2px; text-align: left; padding: 8px 10px; border-radius: var(--r); background: var(--panel-2); border: 1px solid transparent; }
+.libitem b { font-weight: 600; font-size: 13px; }
+.libitem span { font-size: 11.5px; color: var(--muted); line-height: 1.3; }
+.libitem.on { border-color: var(--accent); background: var(--accent-soft); }
+.libitem.on b { color: var(--accent); }
+#libForm .field input[type=text] { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; width: 7em; text-align: center; font: 600 14px var(--f-ui); letter-spacing: .08em; }
+.unit-chip { display: inline-block; font: 500 10px var(--f-num); letter-spacing: .06em; color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+.libstat { font: 11px var(--f-num); color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.3em; }
+.libstat.err { color: var(--sub); }
 .cv { display: grid; grid-template-columns: 26px 22px 1fr auto; align-items: center; gap: 4px; padding: 5px 6px; border-radius: var(--r); background: var(--panel-2); border: 1px solid transparent; cursor: pointer; }
 .cv.on { border-color: var(--accent); background: var(--accent-soft); }
 .cv .eye { background: none; border: 0; padding: 0; height: 22px; color: var(--muted); font: 12px var(--f-num); }
@@ -205,6 +215,7 @@ body:not(.touchui) .quick { display: none; }
       <button class="btn on" id="spaceSculpt" title="Sculpter les maillages">Sculpt</button>
       <button class="btn" id="spaceGP" title="Dessiner des traits dans l'espace (P)">Dessin 3D</button>
       <button class="btn" id="spaceCurves" title="Formes et courbes de Bézier vers maillage (C)">Courbes</button>
+      <button class="btn" id="spaceLib" title="Modèles paramétriques : bijoux, figures, bâtiments (M)">Modèles</button>
     </div>
     <div class="sep"></div>
     <div class="seg only-sculpt" role="group" aria-label="Mode d'action">
@@ -266,6 +277,9 @@ body:not(.touchui) .quick { display: none; }
     <div class="only-curves" style="display:grid;gap:3px">
       <div id="cvTools" style="display:grid;gap:3px"></div>
     </div>
+    <div class="only-lib" style="display:grid;gap:3px">
+      <div id="libCats" style="display:grid;gap:3px"></div>
+    </div>
     <div class="only-gp" style="display:grid;gap:3px">
       <div id="gpTools" style="display:grid;gap:3px"></div>
       <div class="rail-label">Couleur</div>
@@ -314,6 +328,35 @@ body:not(.touchui) .quick { display: none; }
         <div class="row"><button class="btn" id="gpConvert" title="Transforme les traits visibles en tubes sculptables">Convertir en SubTool</button></div>
         <div class="row"><button class="btn" id="gpToCurves" title="Ajuste une courbe de Bézier éditable sur chaque trait visible">Convertir en courbes</button></div>
         <p class="note">Le curseur 3D fixe la profondeur des plans. Après conversion, DynaMesh soude les tubes en un volume.</p>
+      </div>
+    </details>
+
+    <details class="pal only-lib" open id="libListPal">
+      <summary id="libCatTitle">Modèles</summary>
+      <div class="pal-body"><div class="stlist" id="libList" style="max-height:none"></div></div>
+    </details>
+
+    <details class="pal only-lib" open id="libParamPal">
+      <summary id="libTitle">Paramètres</summary>
+      <div class="pal-body">
+        <p class="note" id="libDesc"></p>
+        <div id="libForm" style="display:grid;gap:8px"></div>
+        <div class="row">
+          <button class="btn" id="libReset">Valeurs par défaut</button>
+          <button class="btn" id="libFrame" title="F">Cadrer</button>
+        </div>
+        <div class="libstat" id="libStatus" role="status"></div>
+      </div>
+    </details>
+
+    <details class="pal only-lib" open>
+      <summary>Créer</summary>
+      <div class="pal-body">
+        <div class="row">
+          <button class="btn" id="libNew" title="Remplace la scène actuelle (annulable)">Nouvelle scène</button>
+          <button class="btn" id="libAdd">Ajouter à la scène</button>
+        </div>
+        <p class="note">Chaque pièce devient un SubTool sculptable. Unités réelles : bijoux en millimètres, figures en centimètres, bâtiments en mètres — un export OBJ garde ces dimensions.</p>
       </div>
     </details>
 
@@ -509,6 +552,7 @@ body:not(.touchui) .quick { display: none; }
         <div>Q W E R : Draw, Move, Scale, Rotate</div>
         <div>P : Dessin 3D · C : Courbes · en Dessin 3D, 1–4 : Dessin, Ligne, Gomme, Curseur</div>
         <div>Courbes : 1–5 Forme, Courbe, Plume, Éditer, Curseur · Suppr efface · Ctrl+Entrée crée le maillage</div>
+        <div>M : Modèles paramétriques (bijoux, figures, bâtiments)</div>
       </div>
     </details>
   </aside>

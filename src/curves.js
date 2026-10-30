@@ -613,7 +613,7 @@ const Curves = {
   DEFAULTS, PROFILES, makeCurve, syncIds, clone, anchor, nSeg, segment, bez, bezD, polyline, resample, polyLength, curveLength,
   splitAt, removeAnchor, setSmooth, moveHandle, moveAnchor, setClosed, translate, nearest,
   fitPlane, toPlane, fromPlane, projectOnPlane, flattenToPlane, fitPath, area2, earClip, profilePoly,
-  sweepMesh, polygonSDF, shapeSolid, bake, previewLines,
+  sweepMesh, polygonSDF, edt2d, shapeSolid, bake, previewLines,
   v: { add, sub, mul, dot, cross, len, norm, lerp },
 };
 root.Curves = Curves;

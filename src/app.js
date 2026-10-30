@@ -1,7 +1,7 @@
 /* Argile — application : interface, entrées, actions, annulation. */
 (function () {
 'use strict';
-const { Core, Sculpt, Render, IO, GP, Curves } = window;
+const { Core, Sculpt, Render, IO, GP, Curves, Samples } = window;
 const { V, Q, Camera, Renderer } = Render;
 const $ = (id) => document.getElementById(id);
 const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -165,7 +165,8 @@ function frame() {
   resize();
   const items = [];
   try {
-    S.subtools.forEach((st, i) => {
+    if (S.space === 'lib') for (const L of LIB.preview) { prepLevel(L, false); items.push({ level: L, active: true, groups: S.display.groups, wire: S.display.wire, paint: false }); }
+    else S.subtools.forEach((st, i) => {
       if (!st.visible) return;
       const L = Core.curLevel(st); prepLevel(L, i === S.active);
       items.push({ level: L, active: i === S.active, groups: S.display.groups, wire: S.display.wire, paint: S.display.paint });
@@ -199,6 +200,7 @@ function drawOverlay() {
   }
   if (S.space === 'gp') { drawGPOverlay(); return; }
   if (S.space === 'curves') { drawCurvesOverlay(); return; }
+  if (S.space === 'lib') return;
   if (!pointer.inside || S.mode !== 'draw') return;
   const type = brushTypeNow();
   const sub = (S.brush.zadd ? 1 : -1) * (pointer.alt ? -1 : 1) < 0;
@@ -439,6 +441,7 @@ canvas.addEventListener('pointerdown', (e) => {
 function downPrimary(e, x, y, forced) {
   if (S.space === 'gp') { gpDown(e, x, y, forced); return; }
   if (S.space === 'curves') { cvDown(e, x, y); return; }
+  if (S.space === 'lib') { drag = { kind: 'bg', start: [x, y], last: [x, y], moved: false }; return; }
   const ctrl = e.ctrlKey || e.metaKey;
   if (S.mode !== 'draw' && active()) {
     const [mn, mx] = stBounds(active());
@@ -674,6 +677,8 @@ window.addEventListener('keydown', (e) => {
   if (e.shiftKey) return;
   if (k === 'p') return go(() => setSpace(S.space === 'gp' ? 'sculpt' : 'gp'));
   if (k === 'c') return go(() => setSpace(S.space === 'curves' ? 'sculpt' : 'curves'));
+  if (k === 'm') return go(() => setSpace(S.space === 'lib' ? 'sculpt' : 'lib'));
+  if (S.space === 'lib') { if (k === 'f') return go(frameLib); return; }
   if (S.space === 'curves') {
     const t = { 1: 'shape', 2: 'path', 3: 'pen', 4: 'edit', 5: 'cursor' }[e.key];
     if (t) return go(() => setCvTool(t));
@@ -730,7 +735,7 @@ function newScene() {
     for (const st of S.subtools) for (const L of st.levels) releaseLevel(L);
     S.subtools = [newSubtool('sphere')]; S.active = 0; undoStack.length = 0; redoStack.length = 0;
     S.gp = Object.assign(GP.makeState(), { cursor: [0, 0, 0] }); refreshGPLayers();
-    S.curves = []; S.cvSel = { id: null, a: -1 }; S.cvPen = null; dropGhost(); refreshCurveUI();
+    S.curves = []; S.cvSel = { id: null, a: -1 }; S.cvPen = null; S.cvDef = null; dropGhost(); refreshCurveUI();
     cam.q = [0, 0, 0, 1]; frameAll(); scheduleAutosave();
   });
 }
@@ -964,7 +969,7 @@ function refreshUI() {
   $('lazyBtn').classList.toggle('on', S.brush.lazy); $('penSizeBtn').classList.toggle('on', S.brush.penSize);
   ['symX', 'symY', 'symZ'].forEach((id, i) => $(id).classList.toggle('on', S.sym[i]));
   $('wireBtn').classList.toggle('on', S.display.wire); $('groupsBtn').classList.toggle('on', S.display.groups);
-  $('spaceSculpt').classList.toggle('on', S.space === 'sculpt'); $('spaceGP').classList.toggle('on', S.space === 'gp'); $('spaceCurves').classList.toggle('on', S.space === 'curves');
+  $('spaceSculpt').classList.toggle('on', S.space === 'sculpt'); $('spaceGP').classList.toggle('on', S.space === 'gp'); $('spaceCurves').classList.toggle('on', S.space === 'curves'); $('spaceLib').classList.toggle('on', S.space === 'lib');
   document.querySelectorAll('[data-cvtool]').forEach((el) => el.classList.toggle('on', el.dataset.cvtool === S.cvTool));
   document.querySelectorAll('[data-gptool]').forEach((el) => el.classList.toggle('on', el.dataset.gptool === S.gpTool));
   document.querySelectorAll('.sw').forEach((el) => el.classList.toggle('on', el.dataset.hex === rgbHex(S.gpOpt.color)));
@@ -1500,6 +1505,175 @@ function refreshCurveUI() {
   drawProfilePreview();
 }
 
+// ------------------------------------------------------------ Modèles paramétriques
+const LIB = { cat: 'bijoux', id: 'chevaliere', values: {}, preview: [], timer: 0, savedCam: null, framed: false, seq: 0 };
+const libSample = () => Samples.CATALOG.find((s) => s.id === LIB.id);
+const libValues = () => (LIB.values[LIB.id] || (LIB.values[LIB.id] = Samples.defaults(LIB.id)));
+const textCache = new Map();
+// Champ signé 2D d'un texte (gras à empattements), rendu sur un canvas puis transformé par distance euclidienne
+function textSDF(text, w, h, mirror) {
+  const key = text + '|' + w.toFixed(3) + '|' + h.toFixed(3) + '|' + mirror;
+  if (textCache.has(key)) return textCache.get(key);
+  const R = 220, Rx = Math.max(16, Math.round(R * Math.min(1, w / h))), Rz = Math.max(16, Math.round(R * Math.min(1, h / w)));
+  const cv = document.createElement('canvas'); cv.width = Rx; cv.height = Rz;
+  const g = cv.getContext('2d', { willReadFrequently: true });
+  const font = (px) => '700 ' + px + 'px Georgia, "Times New Roman", serif';
+  g.font = font(100); const mw = Math.max(1, g.measureText(text).width);
+  const fs = Math.min(Rz * 0.82, (Rx * 0.92 * 100) / mw);
+  g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.font = font(fs);
+  if (mirror) { g.translate(Rx, 0); g.scale(-1, 1); }
+  g.fillText(text, Rx / 2, Rz / 2 + fs * 0.06);
+  const img = g.getImageData(0, 0, Rx, Rz).data, inside = new Uint8Array(Rx * Rz), out = new Uint8Array(Rx * Rz);
+  let any = 0;
+  for (let i = 0; i < inside.length; i++) { inside[i] = img[4 * i + 3] > 127 ? 1 : 0; out[i] = 1 - inside[i]; any += inside[i]; }
+  if (!any) { textCache.set(key, null); return null; }
+  const dIn = Curves.edt2d(out, Rx, Rz), dOut = Curves.edt2d(inside, Rx, Rz), cell = w / Rx;
+  const F = new Float32Array(Rx * Rz);
+  for (let i = 0; i < F.length; i++) F[i] = (inside[i] ? -(dIn[i] - 0.5) : dOut[i] - 0.5) * cell;
+  const fn = (x, z) => {
+    let u = x / cell + Rx / 2 - 0.5, v = z / cell + Rz / 2 - 0.5;
+    let extra = 0;
+    if (u < 0 || v < 0 || u > Rx - 1 || v > Rz - 1) { const cu = Math.max(0, Math.min(Rx - 1, u)), cvv = Math.max(0, Math.min(Rz - 1, v)); extra = Math.hypot(u - cu, v - cvv) * cell; u = cu; v = cvv; }
+    const i0 = Math.min(Rx - 2, Math.floor(u)), j0 = Math.min(Rz - 2, Math.floor(v)), fu = u - i0, fv = v - j0;
+    const a = F[j0 * Rx + i0], b = F[j0 * Rx + i0 + 1], c = F[(j0 + 1) * Rx + i0], d = F[(j0 + 1) * Rx + i0 + 1];
+    return (a * (1 - fu) + b * fu) * (1 - fv) + (c * (1 - fu) + d * fu) * fv + extra;
+  };
+  if (textCache.size > 24) textCache.clear();
+  textCache.set(key, fn); return fn;
+}
+function libLevel(pt) { return Core.makeLevel(pt.mesh.pos, pt.mesh.idx, pt.mesh.nv, { groups: pt.mesh.groups }); }
+function dropLibPreview() { for (const L of LIB.preview) releaseLevel(L); LIB.preview = []; req(); }
+function scheduleLibPreview(delay = 220) {
+  clearTimeout(LIB.timer);
+  $('libStatus').classList.remove('err'); $('libStatus').textContent = 'Calcul de l’aperçu…';
+  LIB.timer = setTimeout(buildLibPreview, delay);
+}
+function buildLibPreview() {
+  if (S.space !== 'lib') return;
+  const seq = ++LIB.seq, t0 = performance.now();
+  let parts;
+  try { parts = Samples.build(LIB.id, libValues(), { preview: true, previewRes: isAndroid ? 56 : 72, textSDF }); }
+  catch (e) { console.error(e); $('libStatus').classList.add('err'); $('libStatus').textContent = e.message; return; }
+  if (seq !== LIB.seq || S.space !== 'lib') return;
+  dropLibPreview();
+  LIB.preview = parts.map((pt) => { const L = libLevel(pt); L.name = pt.name; return L; });
+  const faces = LIB.preview.reduce((n, L) => n + L.nt, 0);
+  $('libStatus').textContent = 'Aperçu : ' + parts.length + ' pièce' + (parts.length > 1 ? 's' : '') + ' (' + parts.map((p) => p.name).join(', ') + ') · ' + fmtN(faces) + ' faces · ' + Math.round(performance.now() - t0) + ' ms';
+  if (!LIB.framed) {
+    const front = LIB.id === 'collier' || LIB.id === 'boucle';
+    cam.q = front ? Q.norm(Q.axis([0, 1, 0], -0.25)) : Q.norm(Q.mul(Q.axis([0, 1, 0], -0.62), Q.axis([1, 0, 0], -0.38)));
+    frameLib(); LIB.framed = true;
+  }
+  req();
+}
+function frameLib() {
+  if (!LIB.preview.length) return;
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (const L of LIB.preview) for (let i = 0; i < L.pos.length; i += 3) for (let k = 0; k < 3; k++) { mn[k] = Math.min(mn[k], L.pos[i + k]); mx[k] = Math.max(mx[k], L.pos[i + k]); }
+  cam.frame(mn, mx); sceneRadius = Math.max(1e-3, V.len(V.sub(mx, mn)) / 2) + V.len(V.scale(V.add(mn, mx), 0.5)); req();
+}
+function selectSample(id) {
+  if (LIB.id === id && LIB.preview.length) return;
+  LIB.id = id; LIB.framed = false; buildLibForm(); refreshLibList(); scheduleLibPreview(0);
+}
+function fmtParam(q, v) {
+  if (q.fmt) return q.fmt(v);
+  const dec = q.step >= 1 ? 0 : q.step >= 0.1 ? 1 : q.step >= 0.01 ? 2 : 3;
+  return Number(v).toFixed(dec).replace('.', ',') + (q.unit ? (q.unit === '°' ? '°' : ' ' + q.unit) : '');
+}
+function buildLibForm() {
+  const s = libSample(), v = libValues(), form = $('libForm');
+  $('libTitle').innerHTML = ''; $('libTitle').append(s.name, Object.assign(document.createElement('span'), { className: 'unit-chip', textContent: s.unit }));
+  $('libDesc').textContent = s.desc;
+  form.innerHTML = '';
+  for (const q of s.params) {
+    const id = 'lib-' + s.id + '-' + q.key;
+    let row;
+    if (q.type === 'range') {
+      row = document.createElement('div'); row.className = 'slider';
+      const lab = Object.assign(document.createElement('label'), { htmlFor: id, textContent: q.label });
+      const inp = Object.assign(document.createElement('input'), { type: 'range', id, min: q.min, max: q.max, step: q.step, value: v[q.key] });
+      const out = Object.assign(document.createElement('output'), { textContent: fmtParam(q, v[q.key]) });
+      inp.addEventListener('input', () => { v[q.key] = +inp.value; out.textContent = fmtParam(q, v[q.key]); scheduleLibPreview(q.live ? 60 : 220); });
+      row.style.gridTemplateColumns = '104px 1fr 76px';
+      row.append(lab, inp, out);
+    } else if (q.type === 'select') {
+      row = document.createElement('div'); row.className = 'field';
+      const lab = Object.assign(document.createElement('label'), { htmlFor: id, textContent: q.label });
+      const sel = Object.assign(document.createElement('select'), { id, className: 'btn' });
+      for (const [val, txt] of q.options) sel.append(Object.assign(document.createElement('option'), { value: val, textContent: txt }));
+      sel.value = v[q.key];
+      sel.addEventListener('change', () => { v[q.key] = sel.value; refreshLibVisibility(); scheduleLibPreview(60); });
+      row.append(lab, sel);
+    } else if (q.type === 'check') {
+      row = document.createElement('label'); row.className = 'check';
+      const inp = Object.assign(document.createElement('input'), { type: 'checkbox', id, checked: !!v[q.key] });
+      inp.addEventListener('change', () => { v[q.key] = inp.checked; refreshLibVisibility(); scheduleLibPreview(60); });
+      row.append(inp, ' ' + q.label);
+    } else {
+      row = document.createElement('div'); row.className = 'field';
+      const lab = Object.assign(document.createElement('label'), { htmlFor: id, textContent: q.label });
+      const inp = Object.assign(document.createElement('input'), { type: 'text', id, value: v[q.key], maxLength: q.max || 8, spellcheck: false, autocomplete: 'off' });
+      inp.addEventListener('input', () => { v[q.key] = inp.value; scheduleLibPreview(350); });
+      row.append(lab, inp);
+    }
+    row.dataset.key = q.key;
+    form.appendChild(row);
+  }
+  refreshLibVisibility();
+}
+function refreshLibVisibility() {
+  const s = libSample(), v = libValues();
+  for (const q of s.params) { const row = $('libForm').querySelector('[data-key="' + q.key + '"]'); if (row) row.hidden = q.show ? !q.show(v) : false; }
+}
+function refreshLibList() {
+  const cat = Samples.CATEGORIES.find((c) => c.id === LIB.cat);
+  $('libCatTitle').textContent = cat.label;
+  const list = $('libList'); list.innerHTML = '';
+  for (const s of Samples.CATALOG.filter((x) => x.cat === LIB.cat)) {
+    const b = document.createElement('button'); b.className = 'libitem' + (s.id === LIB.id ? ' on' : '');
+    b.append(Object.assign(document.createElement('b'), { textContent: s.name }), Object.assign(document.createElement('span'), { textContent: s.desc }));
+    b.addEventListener('click', () => selectSample(s.id));
+    list.appendChild(b);
+  }
+  document.querySelectorAll('[data-libcat]').forEach((el) => el.classList.toggle('on', el.dataset.libcat === LIB.cat));
+}
+function setLibCat(cat) {
+  LIB.cat = cat; refreshLibList();
+  if (libSample().cat !== cat) selectSample(Samples.CATALOG.find((x) => x.cat === cat).id);
+}
+function libCreate(replace) {
+  const s = libSample();
+  run('Création : ' + s.name + '…', () => {
+    const parts = Samples.build(LIB.id, libValues(), { preview: false, textSDF });
+    if (!parts.length) throw new Error('Ce réglage ne produit aucune pièce.');
+    const before = snapScene();
+    const sts = parts.map((pt) => Core.makeSubtool(pt.name, libLevel(pt)));
+    if (replace) { for (const st of S.subtools) for (const L of st.levels) releaseLevel(L); S.subtools = sts; S.active = 0; S.cvDef = null; }
+    else { S.subtools.push(...sts); S.active = S.subtools.length - sts.length; }
+    pushUndo({ type: 'scene', label: s.name, before, after: snapScene() });
+    LIB.created = true;
+    const faces = sts.reduce((n, st) => n + Core.curLevel(st).nt, 0);
+    setSpace('sculpt'); frameAll();
+    toast(s.name + ' créé' + (s.name.endsWith('e') && !s.name.endsWith('re') ? 'e' : '') + ' : ' + sts.length + ' SubTool' + (sts.length > 1 ? 's' : '') + ', ' + fmtN(faces) + ' faces. Ctrl+Z pour revenir.');
+  });
+}
+function buildLibUI() {
+  const wrap = $('libCats');
+  for (const c of Samples.CATEGORIES) {
+    const el = document.createElement('button'); el.className = 'brush'; el.dataset.libcat = c.id; el.title = c.label + ' (' + c.unit + ')';
+    el.innerHTML = '<span class="code">' + c.code + '</span><span class="key">' + c.unit + '</span>';
+    el.addEventListener('click', () => setLibCat(c.id));
+    wrap.appendChild(el);
+  }
+  $('spaceLib').addEventListener('click', () => setSpace('lib'));
+  $('libReset').addEventListener('click', () => { LIB.values[LIB.id] = Samples.defaults(LIB.id); buildLibForm(); scheduleLibPreview(0); });
+  $('libFrame').addEventListener('click', frameLib);
+  $('libNew').addEventListener('click', () => libCreate(true));
+  $('libAdd').addEventListener('click', () => libCreate(false));
+  refreshLibList(); buildLibForm();
+}
+
 // ------------------------------------------------------------ interface : Dessin 3D et tablette
 const GP_TOOLS = [
   { id: 'draw', code: 'Dr', key: '1', label: 'Dessin', hint: 'Trace un trait dans l’espace' },
@@ -1528,11 +1702,13 @@ function buildGPRail() {
 }
 function setSpace(sp) {
   if (S.space === 'curves' && sp !== 'curves') { if (S.cvPen) cvPenFinish(false); dropGhost(); }
+  if (S.space === 'lib' && sp !== 'lib') { clearTimeout(LIB.timer); LIB.seq++; dropLibPreview(); if (!LIB.created && LIB.savedCam) cam.fromJSON(LIB.savedCam); updateBounds(); }
+  if (sp === 'lib' && S.space !== 'lib') { LIB.savedCam = cam.toJSON(); LIB.created = false; LIB.framed = false; scheduleLibPreview(0); hint('Modèles — réglez les paramètres, puis « Nouvelle scène » ou « Ajouter à la scène ».'); }
   S.space = sp; document.body.dataset.space = sp;
   if (sp === 'gp') { $('gpPal').open = true; hint(GP_TOOLS.find((t) => t.id === S.gpTool).label + ' — ' + GP_TOOLS.find((t) => t.id === S.gpTool).hint); }
   else if (sp === 'curves') { const d = CV_TOOLS.find((t) => t.id === S.cvTool); hint(d.label + ' — ' + d.hint); refreshCurveUI(); scheduleGhost(true); }
-  else brushHint();
-  canvas.style.cursor = sp === 'curves' ? (S.cvTool === 'edit' ? 'default' : 'none') : sp === 'gp' || S.mode === 'draw' ? 'none' : 'grab';
+  else if (sp !== 'lib') brushHint();
+  canvas.style.cursor = sp === 'lib' ? 'grab' : sp === 'curves' ? (S.cvTool === 'edit' ? 'default' : 'none') : sp === 'gp' || S.mode === 'draw' ? 'none' : 'grab';
   refreshUI(); req();
 }
 function setGPTool(t) { S.gpTool = t; if (S.space !== 'gp') setSpace('gp'); const d = GP_TOOLS.find((x) => x.id === t); hint(d.label + ' — ' + d.hint); refreshUI(); req(); }
@@ -1636,7 +1812,7 @@ function loadTabletPrefs() {
 
 // ------------------------------------------------------------ démarrage
 async function boot() {
-  buildRail(); bindUI(); buildGPRail(); bindTabletUI(); loadTabletPrefs(); applyTouchUI(); buildCvRail(); bindCurvesUI();
+  buildRail(); bindUI(); buildGPRail(); bindTabletUI(); loadTabletPrefs(); applyTouchUI(); buildCvRail(); bindCurvesUI(); buildLibUI();
   document.body.dataset.space = S.space; refreshGPLayers(); setGPColor(S.gpOpt.color);
   if (!isMac) document.querySelectorAll('kbd').forEach((k) => { k.textContent = k.textContent.replace('⌘', 'Ctrl+'); });
   try {
@@ -1660,7 +1836,7 @@ async function boot() {
   setSize(S.brush.size); brushHint(); refreshUI(); updateBounds(); req();
   requestAnimationFrame(frame);
   refreshCurveUI();
-  window.argile = { S, cam, Core, Sculpt, GP, Curves, undoStack }; // accès console pour le développement
+  window.argile = { S, cam, Core, Sculpt, GP, Curves, Samples, LIB, undoStack }; // accès console pour le développement
 }
 boot();
 })();
